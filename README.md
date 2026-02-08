@@ -85,22 +85,22 @@ A **production-grade, interactive, and idempotent** PostgreSQL 17 setup script f
 
 ```bash
 # Via wget
-wget https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17-enterprise.sh
+wget https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17.sh
 
 # Via curl
-curl -O https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17-enterprise.sh
+curl -O https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17.sh
 ```
 
 ### 2. Make Executable
 
 ```bash
-chmod +x setup-postgres17-enterprise.sh
+chmod +x setup-postgres17.sh
 ```
 
 ### 3. Run the Setup
 
 ```bash
-sudo ./setup-postgres17-enterprise.sh
+sudo ./setup-postgres17.sh
 ```
 
 ### 4. Follow Interactive Prompts
