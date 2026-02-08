@@ -273,9 +273,11 @@ configure_security() {
     ask "Allowed IP addresses/CIDRs for database access (comma-separated)" "${ALLOWED_IPS}" ALLOWED_IPS
     ask_yn "Enable SSL/TLS for PostgreSQL" "${ENABLE_SSL}" ENABLE_SSL
     
+    # Initialize SSL variables even if SSL is disabled (for save_state)
+    SSL_CERT_FILE="${SSL_CERT_FILE:-${PG_SSL_DIR}/server.crt}"
+    SSL_KEY_FILE="${SSL_KEY_FILE:-${PG_SSL_DIR}/server.key}"
+    
     if [[ "${ENABLE_SSL}" == "yes" ]]; then
-        SSL_CERT_FILE="${SSL_CERT_FILE:-${PG_SSL_DIR}/server.crt}"
-        SSL_KEY_FILE="${SSL_KEY_FILE:-${PG_SSL_DIR}/server.key}"
         ask "SSL certificate path (leave default for self-signed)" "${SSL_CERT_FILE}" SSL_CERT_FILE
         ask "SSL private key path" "${SSL_KEY_FILE}" SSL_KEY_FILE
     fi
