@@ -1,472 +1,1488 @@
 #!/usr/bin/env bash
-# setup-postgres17.sh
-# Idempotent, interactive setup for PostgreSQL 17 + pgbouncer, backups, firewall, fail2ban.
-# Designed for Ubuntu 24.04+. Edges: uses PGDG repo to install postgresql-17.
-# WARNING: Run as root (sudo). Review before running in production.
+# setup-postgres17-enterprise.sh
+# Enterprise-grade PostgreSQL 17 setup with security, monitoring, backup, and maintenance
+# Target: Ubuntu 22.04/24.04 LTS
+# Author: Production-Ready PostgreSQL Automation
+# License: MIT
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-STATE_FILE="/etc/pg-setup.conf"
-BACKUP_DIR="/var/backups/postgresql"
-PG_VERSION="17"
-PG_CONF_DIR="/etc/postgresql/${PG_VERSION}/main"
-PG_HBA_FILE="${PG_CONF_DIR}/pg_hba.conf"
-PG_CONF_FILE="${PG_CONF_DIR}/postgresql.conf"
-PG_SSL_DIR="/etc/ssl/postgresql"
-PG_USER="postgres"
+# ============================================================================
+# CONFIGURATION & CONSTANTS
+# ============================================================================
 
-# Logging helper
-log() { echo "==> $*"; }
+readonly SCRIPT_VERSION="1.0.0"
+readonly PG_VERSION="17"
+readonly STATE_FILE="/etc/postgresql-setup.state"
+readonly BACKUP_DIR="/var/backups/postgresql"
+readonly LOG_DIR="/var/log/postgresql-setup"
+readonly PG_CONF_DIR="/etc/postgresql/${PG_VERSION}/main"
+readonly PG_HBA_FILE="${PG_CONF_DIR}/pg_hba.conf"
+readonly PG_CONF_FILE="${PG_CONF_DIR}/postgresql.conf"
+readonly PG_SSL_DIR="/etc/ssl/postgresql"
+readonly SCRIPTS_DIR="/usr/local/bin"
+readonly MONITORING_DIR="/opt/postgresql-monitoring"
 
-# Ensure running as root
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "This script must be run as root (or with sudo)."
-  exit 1
-fi
+# Colors for output
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
 
-# load previous answers if present
-if [[ -f "${STATE_FILE}" ]]; then
-  # shellcheck disable=SC1090
-  . "${STATE_FILE}"
-fi
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
 
-# persist settings helper
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $*" | tee -a "${LOG_DIR}/setup.log"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] WARNING:${NC} $*" | tee -a "${LOG_DIR}/setup.log"
+}
+
+log_error() {
+    echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR:${NC} $*" | tee -a "${LOG_DIR}/setup.log"
+}
+
+log_section() {
+    echo | tee -a "${LOG_DIR}/setup.log"
+    echo -e "${BLUE}========================================${NC}" | tee -a "${LOG_DIR}/setup.log"
+    echo -e "${BLUE}$*${NC}" | tee -a "${LOG_DIR}/setup.log"
+    echo -e "${BLUE}========================================${NC}" | tee -a "${LOG_DIR}/setup.log"
+}
+
+check_root() {
+    if [[ "${EUID}" -ne 0 ]]; then
+        log_error "This script must be run as root. Use: sudo $0"
+        exit 1
+    fi
+}
+
+check_os() {
+    if [[ ! -f /etc/os-release ]]; then
+        log_error "Cannot detect OS. /etc/os-release not found."
+        exit 1
+    fi
+    
+    . /etc/os-release
+    
+    if [[ "${ID}" != "ubuntu" ]]; then
+        log_warn "This script is designed for Ubuntu. Detected: ${ID}"
+        read -p "Continue anyway? (yes/no): " -r
+        if [[ ! "${REPLY}" =~ ^[Yy][Ee][Ss]$ ]]; then
+            exit 1
+        fi
+    fi
+    
+    log "Detected OS: ${PRETTY_NAME}"
+}
+
+# ============================================================================
+# STATE MANAGEMENT
+# ============================================================================
+
+load_state() {
+    if [[ -f "${STATE_FILE}" ]]; then
+        # shellcheck disable=SC1090
+        source "${STATE_FILE}"
+        log "Loaded previous configuration from ${STATE_FILE}"
+        return 0
+    fi
+    return 1
+}
+
 save_state() {
-  cat > "${STATE_FILE}" <<-EOF
-# pg setup state - DO NOT MANUALLY EDIT UNLESS YOU KNOW WHAT YOU'RE DOING
-PG_VERSION="${PG_VERSION}"
-DB_LISTEN_ADDRESSES="${DB_LISTEN_ADDRESSES:-'localhost'}"
-DB_PORT="${DB_PORT:-5432}"
-ALLOWED_IPS="${ALLOWED_IPS:-127.0.0.1/32}"
-PG_SSL="${PG_SSL:-no}"
-SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/postgresql/server.crt}"
-SSL_KEY_FILE="${SSL_KEY_FILE:-/etc/ssl/postgresql/server.key}"
-ENABLE_WAL_ARCHIVE="${ENABLE_WAL_ARCHIVE:-no}"
-WAL_S3_BUCKET="${WAL_S3_BUCKET:-}"
-BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
-PGBOUNCER_ENABLED="${PGBOUNCER_ENABLED:-yes}"
+    cat > "${STATE_FILE}" << EOF
+# PostgreSQL Enterprise Setup State File
+# Generated: $(date)
+# Version: ${SCRIPT_VERSION}
+
+# Database Configuration
+DB_LISTEN_ADDRESSES="${DB_LISTEN_ADDRESSES}"
+DB_PORT="${DB_PORT}"
+DB_MAX_CONNECTIONS="${DB_MAX_CONNECTIONS}"
+DB_SHARED_BUFFERS="${DB_SHARED_BUFFERS}"
+DB_EFFECTIVE_CACHE="${DB_EFFECTIVE_CACHE}"
+DB_WORK_MEM="${DB_WORK_MEM}"
+DB_MAINTENANCE_WORK_MEM="${DB_MAINTENANCE_WORK_MEM}"
+
+# Security Configuration
+ALLOWED_IPS="${ALLOWED_IPS}"
+ENABLE_SSL="${ENABLE_SSL}"
+SSL_CERT_FILE="${SSL_CERT_FILE}"
+SSL_KEY_FILE="${SSL_KEY_FILE}"
+ENABLE_FIREWALL="${ENABLE_FIREWALL}"
+ENABLE_FAIL2BAN="${ENABLE_FAIL2BAN}"
+SSH_PORT="${SSH_PORT}"
+
+# Backup Configuration
+ENABLE_BACKUPS="${ENABLE_BACKUPS}"
+BACKUP_SCHEDULE="${BACKUP_SCHEDULE}"
+BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS}"
+BACKUP_COMPRESSION="${BACKUP_COMPRESSION}"
+REMOTE_BACKUP_ENABLED="${REMOTE_BACKUP_ENABLED}"
+REMOTE_BACKUP_TYPE="${REMOTE_BACKUP_TYPE}"
+S3_BUCKET="${S3_BUCKET}"
+S3_REGION="${S3_REGION}"
+
+# High Availability
+ENABLE_WAL_ARCHIVING="${ENABLE_WAL_ARCHIVING}"
+WAL_ARCHIVE_DESTINATION="${WAL_ARCHIVE_DESTINATION}"
+ENABLE_REPLICATION="${ENABLE_REPLICATION}"
+REPLICATION_SLOTS="${REPLICATION_SLOTS}"
+
+# Connection Pooling
+ENABLE_PGBOUNCER="${ENABLE_PGBOUNCER}"
+PGBOUNCER_PORT="${PGBOUNCER_PORT}"
+PGBOUNCER_POOL_MODE="${PGBOUNCER_POOL_MODE}"
+PGBOUNCER_MAX_CLIENT_CONN="${PGBOUNCER_MAX_CLIENT_CONN}"
+PGBOUNCER_DEFAULT_POOL_SIZE="${PGBOUNCER_DEFAULT_POOL_SIZE}"
+
+# Monitoring
+ENABLE_MONITORING="${ENABLE_MONITORING}"
+MONITORING_RETENTION_DAYS="${MONITORING_RETENTION_DAYS}"
+
+# Logging
+LOG_DESTINATION="${LOG_DESTINATION}"
+LOG_MIN_DURATION="${LOG_MIN_DURATION}"
+LOG_CONNECTIONS="${LOG_CONNECTIONS}"
+LOG_DISCONNECTIONS="${LOG_DISCONNECTIONS}"
+
+# Setup Metadata
+SETUP_DATE="$(date)"
+SETUP_COMPLETE="true"
 EOF
-  chmod 600 "${STATE_FILE}"
-  log "Saved state to ${STATE_FILE}"
+    
+    chmod 600 "${STATE_FILE}"
+    log "Configuration saved to ${STATE_FILE}"
 }
 
-# Ask with default helper
+# ============================================================================
+# INTERACTIVE PROMPTS
+# ============================================================================
+
 ask() {
-  local prompt="$1"; local default="$2"; local varname="$3"
-  if [[ -n "${!varname-}" ]]; then
-    printf "%s [%s] (from state) : " "${prompt}" "${!varname}"
-  else
-    printf "%s [%s]: " "${prompt}" "${default}"
-  fi
-  read -r answer || answer=""
-  if [[ -z "${answer}" ]]; then
-    if [[ -n "${!varname-}" ]]; then
-      true # keep existing
+    local prompt="$1"
+    local default="$2"
+    local varname="$3"
+    local current_value="${!varname:-}"
+    
+    if [[ -n "${current_value}" ]]; then
+        printf "${BLUE}%s${NC} [current: ${GREEN}%s${NC}]: " "${prompt}" "${current_value}"
     else
-      eval "${varname}='${default}'"
+        printf "${BLUE}%s${NC} [default: ${YELLOW}%s${NC}]: " "${prompt}" "${default}"
     fi
-  else
-    eval "${varname}='${answer}'"
-  fi
+    
+    read -r answer
+    
+    if [[ -z "${answer}" ]]; then
+        if [[ -n "${current_value}" ]]; then
+            eval "${varname}='${current_value}'"
+        else
+            eval "${varname}='${default}'"
+        fi
+    else
+        eval "${varname}='${answer}'"
+    fi
 }
 
-# Prepare interactive defaults (only if not present)
-if [[ -z "${DB_LISTEN_ADDRESSES-}" ]]; then
-  DB_LISTEN_ADDRESSES="0.0.0.0"
-fi
-if [[ -z "${DB_PORT-}" ]]; then
-  DB_PORT="5432"
-fi
-if [[ -z "${ALLOWED_IPS-}" ]]; then
-  ALLOWED_IPS="127.0.0.1/32"
-fi
-if [[ -z "${PG_SSL-}" ]]; then
-  PG_SSL="no"
-fi
-if [[ -z "${BACKUP_RETENTION_DAYS-}" ]]; then
-  BACKUP_RETENTION_DAYS="14"
-fi
-if [[ -z "${PGBOUNCER_ENABLED-}" ]]; then
-  PGBOUNCER_ENABLED="yes"
-fi
-if [[ -z "${ENABLE_WAL_ARCHIVE-}" ]]; then
-  ENABLE_WAL_ARCHIVE="no"
-fi
-
-echo "PostgreSQL ${PG_VERSION} automated setup (idempotent)."
-echo "If you re-run the script it will re-use saved answers from ${STATE_FILE}."
-echo
-
-# Interactive prompts (non-blocking if state exists)
-ask "Postgres listen addresses (comma or space separated)" "${DB_LISTEN_ADDRESSES}" DB_LISTEN_ADDRESSES
-ask "Postgres port" "${DB_PORT}" DB_PORT
-ask "Allowed IPs/CIDRs for DB access (comma-separated). Example: 203.0.113.4/32,198.51.100.0/24" "${ALLOWED_IPS}" ALLOWED_IPS
-ask "Enable SSL for Postgres? (yes/no)" "${PG_SSL}" PG_SSL
-
-if [[ "${PG_SSL}" == "yes" ]]; then
-  ask "Path for server certificate" "${SSL_CERT_FILE}" SSL_CERT_FILE
-  ask "Path for server key" "${SSL_KEY_FILE}" SSL_KEY_FILE
-fi
-
-ask "Enable WAL archiving to S3? (no/yes)" "${ENABLE_WAL_ARCHIVE}" ENABLE_WAL_ARCHIVE
-if [[ "${ENABLE_WAL_ARCHIVE}" == "yes" ]]; then
-  ask "S3 bucket URI (s3://bucket/path/) for WAL archive" "${WAL_S3_BUCKET:-}" WAL_S3_BUCKET
-  log "NOTE: AWS credentials must be available to root (env or /root/.aws/)."
-fi
-
-ask "Retention days for logical backups (days)" "${BACKUP_RETENTION_DAYS}" BACKUP_RETENTION_DAYS
-ask "Enable pgbouncer on this host? (yes/no)" "${PGBOUNCER_ENABLED}" PGBOUNCER_ENABLED
-
-# persist choices
-save_state
-
-# Add PGDG apt repository (idempotent)
-install_pgdg_repo() {
-  if ! grep -q "apt.postgresql.org" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || ! dpkg -l | grep -q "postgresql-${PG_VERSION}"; then
-    log "Adding PostgreSQL official APT repository..."
-    apt-get update -y
-    apt-get install -y wget ca-certificates lsb-release gnupg
-    # Add the repository key and source
-    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
-    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-    apt-get update -y
-  else
-    log "PGDG repo already configured."
-  fi
+ask_yn() {
+    local prompt="$1"
+    local default="$2"
+    local varname="$3"
+    local current_value="${!varname:-}"
+    
+    if [[ -n "${current_value}" ]]; then
+        printf "${BLUE}%s${NC} (yes/no) [current: ${GREEN}%s${NC}]: " "${prompt}" "${current_value}"
+    else
+        printf "${BLUE}%s${NC} (yes/no) [default: ${YELLOW}%s${NC}]: " "${prompt}" "${default}"
+    fi
+    
+    read -r answer
+    
+    if [[ -z "${answer}" ]]; then
+        if [[ -n "${current_value}" ]]; then
+            eval "${varname}='${current_value}'"
+        else
+            eval "${varname}='${default}'"
+        fi
+    else
+        answer=$(echo "${answer}" | tr '[:upper:]' '[:lower:]')
+        if [[ "${answer}" =~ ^(yes|y|true|1)$ ]]; then
+            eval "${varname}='yes'"
+        else
+            eval "${varname}='no'"
+        fi
+    fi
 }
 
-install_postgres() {
-  if dpkg -l | grep -q "postgresql-${PG_VERSION}"; then
-    log "PostgreSQL ${PG_VERSION} already installed."
-  else
-    log "Installing PostgreSQL ${PG_VERSION}..."
-    apt-get install -y "postgresql-${PG_VERSION}" "postgresql-contrib-${PG_VERSION}" postgresql-client-${PG_VERSION}
-    log "Installed PostgreSQL ${PG_VERSION}."
-  fi
+# ============================================================================
+# INTERACTIVE CONFIGURATION
+# ============================================================================
+
+configure_database() {
+    log_section "DATABASE CONFIGURATION"
+    
+    DB_LISTEN_ADDRESSES="${DB_LISTEN_ADDRESSES:-0.0.0.0}"
+    DB_PORT="${DB_PORT:-5432}"
+    DB_MAX_CONNECTIONS="${DB_MAX_CONNECTIONS:-200}"
+    
+    ask "PostgreSQL listen addresses (0.0.0.0 for all, localhost for local only)" "${DB_LISTEN_ADDRESSES}" DB_LISTEN_ADDRESSES
+    ask "PostgreSQL port" "${DB_PORT}" DB_PORT
+    ask "Maximum connections" "${DB_MAX_CONNECTIONS}" DB_MAX_CONNECTIONS
+    
+    # Auto-calculate optimal settings based on system resources
+    local total_mem_mb
+    total_mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+    
+    local suggested_shared_buffers=$((total_mem_mb / 4))
+    local suggested_effective_cache=$((total_mem_mb * 3 / 4))
+    local suggested_work_mem=$((total_mem_mb / DB_MAX_CONNECTIONS / 2))
+    local suggested_maintenance=$((total_mem_mb / 16))
+    
+    [[ ${suggested_shared_buffers} -lt 256 ]] && suggested_shared_buffers=256
+    [[ ${suggested_shared_buffers} -gt 8192 ]] && suggested_shared_buffers=8192
+    [[ ${suggested_work_mem} -lt 4 ]] && suggested_work_mem=4
+    [[ ${suggested_work_mem} -gt 128 ]] && suggested_work_mem=128
+    [[ ${suggested_maintenance} -lt 64 ]] && suggested_maintenance=64
+    
+    DB_SHARED_BUFFERS="${DB_SHARED_BUFFERS:-${suggested_shared_buffers}}"
+    DB_EFFECTIVE_CACHE="${DB_EFFECTIVE_CACHE:-${suggested_effective_cache}}"
+    DB_WORK_MEM="${DB_WORK_MEM:-${suggested_work_mem}}"
+    DB_MAINTENANCE_WORK_MEM="${DB_MAINTENANCE_WORK_MEM:-${suggested_maintenance}}"
+    
+    log "System memory: ${total_mem_mb}MB"
+    ask "Shared buffers (MB)" "${DB_SHARED_BUFFERS}" DB_SHARED_BUFFERS
+    ask "Effective cache size (MB)" "${DB_EFFECTIVE_CACHE}" DB_EFFECTIVE_CACHE
+    ask "Work memory per operation (MB)" "${DB_WORK_MEM}" DB_WORK_MEM
+    ask "Maintenance work memory (MB)" "${DB_MAINTENANCE_WORK_MEM}" DB_MAINTENANCE_WORK_MEM
 }
 
-install_basic_tools() {
-  apt-get install -y ufw fail2ban cron logrotate awscli
-  # ensure basic tools present
-  apt-get install -y rsync vim less psmisc
+configure_security() {
+    log_section "SECURITY CONFIGURATION"
+    
+    ALLOWED_IPS="${ALLOWED_IPS:-127.0.0.1/32}"
+    ENABLE_SSL="${ENABLE_SSL:-yes}"
+    ENABLE_FIREWALL="${ENABLE_FIREWALL:-yes}"
+    ENABLE_FAIL2BAN="${ENABLE_FAIL2BAN:-yes}"
+    SSH_PORT="${SSH_PORT:-22}"
+    
+    ask "Allowed IP addresses/CIDRs for database access (comma-separated)" "${ALLOWED_IPS}" ALLOWED_IPS
+    ask_yn "Enable SSL/TLS for PostgreSQL" "${ENABLE_SSL}" ENABLE_SSL
+    
+    if [[ "${ENABLE_SSL}" == "yes" ]]; then
+        SSL_CERT_FILE="${SSL_CERT_FILE:-${PG_SSL_DIR}/server.crt}"
+        SSL_KEY_FILE="${SSL_KEY_FILE:-${PG_SSL_DIR}/server.key}"
+        ask "SSL certificate path (leave default for self-signed)" "${SSL_CERT_FILE}" SSL_CERT_FILE
+        ask "SSL private key path" "${SSL_KEY_FILE}" SSL_KEY_FILE
+    fi
+    
+    ask_yn "Enable UFW firewall" "${ENABLE_FIREWALL}" ENABLE_FIREWALL
+    ask_yn "Enable Fail2Ban intrusion prevention" "${ENABLE_FAIL2BAN}" ENABLE_FAIL2BAN
+    ask "SSH port (for firewall rules)" "${SSH_PORT}" SSH_PORT
 }
 
-# Tune postgresql.conf based on memory and basic best-practices
-tune_postgres() {
-  # detect total memory in MB
-  local total_mem_mb
-  total_mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo || echo 4096)
-  log "Detected ${total_mem_mb} MB RAM. Applying conservative tuning."
-
-  # calculate values; safe defaults
-  # shared_buffers = ~25% RAM (but capped)
-  local shared_buffers_mb=$(( total_mem_mb / 4 ))
-  if (( shared_buffers_mb < 256 )); then shared_buffers_mb=256; fi
-  # effective_cache_size ~ 75% RAM
-  local effective_cache_mb=$(( (total_mem_mb * 3) / 4 ))
-  if (( effective_cache_mb < 768 )); then effective_cache_mb=768; fi
-  # work_mem default modest; we'll set a default that works for many connections
-  local work_mem_kb=65536 # 64MB
-  # maintenance_work_mem
-  local maintenance_work_mem_mb=256
-
-  # patch postgresql.conf idempotent
-  sed -i.bak -E "s/^[# ]*shared_buffers *=.*$/shared_buffers = '${shared_buffers_mb}MB'/" "${PG_CONF_FILE}" || echo "shared_buffers = '${shared_buffers_mb}MB'" >> "${PG_CONF_FILE}"
-  sed -i.bak -E "s/^[# ]*effective_cache_size *=.*$/effective_cache_size = '${effective_cache_mb}MB'/" "${PG_CONF_FILE}" || echo "effective_cache_size = '${effective_cache_mb}MB'" >> "${PG_CONF_FILE}"
-  sed -i.bak -E "s/^[# ]*work_mem *=.*$/work_mem = '${work_mem_kb}kB'/" "${PG_CONF_FILE}" || echo "work_mem = '${work_mem_kb}kB'" >> "${PG_CONF_FILE}"
-  sed -i.bak -E "s/^[# ]*maintenance_work_mem *=.*$/maintenance_work_mem = '${maintenance_work_mem_mb}MB'/" "${PG_CONF_FILE}" || echo "maintenance_work_mem = '${maintenance_work_mem_mb}MB'" >> "${PG_CONF_FILE}"
-  sed -i.bak -E "s/^[# ]*max_wal_size *=.*$/max_wal_size = '2GB'/" "${PG_CONF_FILE}" || echo "max_wal_size = '2GB'" >> "${PG_CONF_FILE}"
-  sed -i.bak -E "s/^[# ]*checkpoint_timeout *=.*$/checkpoint_timeout = '10min'/" "${PG_CONF_FILE}" || echo "checkpoint_timeout = '10min'" >> "${PG_CONF_FILE}"
-  sed -i.bak -E "s/^[# ]*wal_compression *=.*$/wal_compression = on/" "${PG_CONF_FILE}" || echo "wal_compression = on" >> "${PG_CONF_FILE}"
-
-  # listen addresses
-  if grep -q "^#*listen_addresses" "${PG_CONF_FILE}"; then
-    sed -i -E "s/^#*listen_addresses.*/listen_addresses = '${DB_LISTEN_ADDRESSES//'/' }'/" "${PG_CONF_FILE}"
-  else
-    echo "listen_addresses = '${DB_LISTEN_ADDRESSES//'/' }'" >> "${PG_CONF_FILE}"
-  fi
-
-  # port
-  sed -i -E "s/^#*port *=.*$/port = ${DB_PORT}/" "${PG_CONF_FILE}" || echo "port = ${DB_PORT}" >> "${PG_CONF_FILE}"
-
-  # configure WAL archiving if enabled
-  if [[ "${ENABLE_WAL_ARCHIVE}" == "yes" && -n "${WAL_S3_BUCKET}" ]]; then
-    sed -i -E "s/^#*archive_mode .*$/archive_mode = on/" "${PG_CONF_FILE}" || echo "archive_mode = on" >> "${PG_CONF_FILE}"
-    sed -i -E "s/^#*archive_command .*$/archive_command = 'test ! -f \/var\/lib\/postgresql\/wal_archive\/%f \&\& aws s3 cp - \/dev\/null'/" "${PG_CONF_FILE}" || echo "archive_command = 'aws s3 cp - ${WAL_S3_BUCKET}%f'" >> "${PG_CONF_FILE}"
-    mkdir -p /var/lib/postgresql/wal_archive || true
-    chown -R postgres:postgres /var/lib/postgresql/wal_archive || true
-    log "WAL archiving configured (note: ensure aws cli credentials are available)."
-  fi
-
-  log "Postgres tuned (shared_buffers=${shared_buffers_mb}MB, effective_cache_size=${effective_cache_mb}MB)."
+configure_backups() {
+    log_section "BACKUP CONFIGURATION"
+    
+    ENABLE_BACKUPS="${ENABLE_BACKUPS:-yes}"
+    BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-daily}"
+    BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+    BACKUP_COMPRESSION="${BACKUP_COMPRESSION:-yes}"
+    REMOTE_BACKUP_ENABLED="${REMOTE_BACKUP_ENABLED:-no}"
+    
+    ask_yn "Enable automated backups" "${ENABLE_BACKUPS}" ENABLE_BACKUPS
+    
+    if [[ "${ENABLE_BACKUPS}" == "yes" ]]; then
+        ask "Backup schedule (hourly/daily/weekly)" "${BACKUP_SCHEDULE}" BACKUP_SCHEDULE
+        ask "Backup retention (days)" "${BACKUP_RETENTION_DAYS}" BACKUP_RETENTION_DAYS
+        ask_yn "Enable backup compression" "${BACKUP_COMPRESSION}" BACKUP_COMPRESSION
+        ask_yn "Enable remote backup (S3/cloud storage)" "${REMOTE_BACKUP_ENABLED}" REMOTE_BACKUP_ENABLED
+        
+        if [[ "${REMOTE_BACKUP_ENABLED}" == "yes" ]]; then
+            REMOTE_BACKUP_TYPE="${REMOTE_BACKUP_TYPE:-s3}"
+            S3_BUCKET="${S3_BUCKET:-}"
+            S3_REGION="${S3_REGION:-us-east-1}"
+            
+            ask "Remote backup type (s3/azure/gcs)" "${REMOTE_BACKUP_TYPE}" REMOTE_BACKUP_TYPE
+            ask "S3 bucket name (s3://bucket-name/path)" "${S3_BUCKET}" S3_BUCKET
+            ask "S3 region" "${S3_REGION}" S3_REGION
+        fi
+    fi
 }
 
-# Configure pg_hba.conf with allowed IPs (idempotent)
+configure_high_availability() {
+    log_section "HIGH AVAILABILITY & REPLICATION"
+    
+    ENABLE_WAL_ARCHIVING="${ENABLE_WAL_ARCHIVING:-no}"
+    ENABLE_REPLICATION="${ENABLE_REPLICATION:-no}"
+    
+    ask_yn "Enable WAL (Write-Ahead Log) archiving" "${ENABLE_WAL_ARCHIVING}" ENABLE_WAL_ARCHIVING
+    
+    if [[ "${ENABLE_WAL_ARCHIVING}" == "yes" ]]; then
+        WAL_ARCHIVE_DESTINATION="${WAL_ARCHIVE_DESTINATION:-/var/lib/postgresql/wal_archive}"
+        ask "WAL archive destination (local path or s3://)" "${WAL_ARCHIVE_DESTINATION}" WAL_ARCHIVE_DESTINATION
+    fi
+    
+    ask_yn "Configure for replication (streaming replication)" "${ENABLE_REPLICATION}" ENABLE_REPLICATION
+    
+    if [[ "${ENABLE_REPLICATION}" == "yes" ]]; then
+        REPLICATION_SLOTS="${REPLICATION_SLOTS:-2}"
+        ask "Number of replication slots" "${REPLICATION_SLOTS}" REPLICATION_SLOTS
+    fi
+}
+
+configure_connection_pooling() {
+    log_section "CONNECTION POOLING (PgBouncer)"
+    
+    ENABLE_PGBOUNCER="${ENABLE_PGBOUNCER:-yes}"
+    
+    ask_yn "Enable PgBouncer connection pooling" "${ENABLE_PGBOUNCER}" ENABLE_PGBOUNCER
+    
+    if [[ "${ENABLE_PGBOUNCER}" == "yes" ]]; then
+        PGBOUNCER_PORT="${PGBOUNCER_PORT:-6432}"
+        PGBOUNCER_POOL_MODE="${PGBOUNCER_POOL_MODE:-transaction}"
+        PGBOUNCER_MAX_CLIENT_CONN="${PGBOUNCER_MAX_CLIENT_CONN:-1000}"
+        PGBOUNCER_DEFAULT_POOL_SIZE="${PGBOUNCER_DEFAULT_POOL_SIZE:-25}"
+        
+        ask "PgBouncer listen port" "${PGBOUNCER_PORT}" PGBOUNCER_PORT
+        ask "Pool mode (session/transaction/statement)" "${PGBOUNCER_POOL_MODE}" PGBOUNCER_POOL_MODE
+        ask "Maximum client connections" "${PGBOUNCER_MAX_CLIENT_CONN}" PGBOUNCER_MAX_CLIENT_CONN
+        ask "Default pool size per user/database" "${PGBOUNCER_DEFAULT_POOL_SIZE}" PGBOUNCER_DEFAULT_POOL_SIZE
+    fi
+}
+
+configure_monitoring() {
+    log_section "MONITORING & LOGGING"
+    
+    ENABLE_MONITORING="${ENABLE_MONITORING:-yes}"
+    LOG_DESTINATION="${LOG_DESTINATION:-csvlog}"
+    LOG_MIN_DURATION="${LOG_MIN_DURATION:-1000}"
+    LOG_CONNECTIONS="${LOG_CONNECTIONS:-on}"
+    LOG_DISCONNECTIONS="${LOG_DISCONNECTIONS:-on}"
+    MONITORING_RETENTION_DAYS="${MONITORING_RETENTION_DAYS:-30}"
+    
+    ask_yn "Enable enhanced monitoring" "${ENABLE_MONITORING}" ENABLE_MONITORING
+    ask "Log destination (stderr/csvlog/syslog)" "${LOG_DESTINATION}" LOG_DESTINATION
+    ask "Log queries slower than (ms, 0 for all)" "${LOG_MIN_DURATION}" LOG_MIN_DURATION
+    ask_yn "Log connections" "${LOG_CONNECTIONS}" LOG_CONNECTIONS
+    ask_yn "Log disconnections" "${LOG_DISCONNECTIONS}" LOG_DISCONNECTIONS
+    ask "Monitoring data retention (days)" "${MONITORING_RETENTION_DAYS}" MONITORING_RETENTION_DAYS
+}
+
+# ============================================================================
+# INSTALLATION FUNCTIONS
+# ============================================================================
+
+install_prerequisites() {
+    log_section "Installing Prerequisites"
+    
+    apt-get update -qq
+    apt-get install -y -qq \
+        wget \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        curl \
+        apt-transport-https \
+        software-properties-common \
+        dirmngr \
+        debian-keyring \
+        debian-archive-keyring
+    
+    log "Prerequisites installed"
+}
+
+install_postgresql_repository() {
+    log_section "Adding PostgreSQL Official Repository"
+    
+    if grep -q "apt.postgresql.org" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
+        log "PostgreSQL repository already configured"
+        return 0
+    fi
+    
+    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+        gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+    
+    echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | \
+        tee /etc/apt/sources.list.d/pgdg.list
+    
+    apt-get update -qq
+    
+    log "PostgreSQL repository added"
+}
+
+install_postgresql() {
+    log_section "Installing PostgreSQL ${PG_VERSION}"
+    
+    if dpkg -l | grep -q "postgresql-${PG_VERSION}"; then
+        log "PostgreSQL ${PG_VERSION} already installed"
+        return 0
+    fi
+    
+    apt-get install -y -qq \
+        "postgresql-${PG_VERSION}" \
+        "postgresql-contrib-${PG_VERSION}" \
+        "postgresql-client-${PG_VERSION}" \
+        "postgresql-server-dev-${PG_VERSION}"
+    
+    systemctl enable postgresql
+    systemctl start postgresql
+    
+    log "PostgreSQL ${PG_VERSION} installed successfully"
+}
+
+install_additional_tools() {
+    log_section "Installing Additional Tools"
+    
+    apt-get install -y -qq \
+        pgbackrest \
+        postgresql-${PG_VERSION}-cron \
+        postgresql-${PG_VERSION}-partman \
+        postgresql-${PG_VERSION}-pgaudit \
+        postgresql-${PG_VERSION}-pg-stat-kcache \
+        htop \
+        iotop \
+        sysstat \
+        logrotate \
+        rsync \
+        parallel \
+        pv \
+        jq \
+        vim \
+        less \
+        net-tools
+    
+    if [[ "${REMOTE_BACKUP_ENABLED}" == "yes" ]]; then
+        apt-get install -y -qq awscli
+    fi
+    
+    log "Additional tools installed"
+}
+
+# ============================================================================
+# CONFIGURATION FUNCTIONS
+# ============================================================================
+
+configure_postgresql() {
+    log_section "Configuring PostgreSQL"
+    
+    # Backup original configuration
+    cp "${PG_CONF_FILE}" "${PG_CONF_FILE}.backup.$(date +%Y%m%d_%H%M%S)" || true
+    
+    # Network settings
+    sed -i "s/^#*listen_addresses.*/listen_addresses = '${DB_LISTEN_ADDRESSES}'/" "${PG_CONF_FILE}"
+    sed -i "s/^#*port.*/port = ${DB_PORT}/" "${PG_CONF_FILE}"
+    sed -i "s/^#*max_connections.*/max_connections = ${DB_MAX_CONNECTIONS}/" "${PG_CONF_FILE}"
+    
+    # Memory settings
+    sed -i "s/^#*shared_buffers.*/shared_buffers = ${DB_SHARED_BUFFERS}MB/" "${PG_CONF_FILE}"
+    sed -i "s/^#*effective_cache_size.*/effective_cache_size = ${DB_EFFECTIVE_CACHE}MB/" "${PG_CONF_FILE}"
+    sed -i "s/^#*work_mem.*/work_mem = ${DB_WORK_MEM}MB/" "${PG_CONF_FILE}"
+    sed -i "s/^#*maintenance_work_mem.*/maintenance_work_mem = ${DB_MAINTENANCE_WORK_MEM}MB/" "${PG_CONF_FILE}"
+    
+    # WAL settings
+    sed -i "s/^#*wal_buffers.*/wal_buffers = 16MB/" "${PG_CONF_FILE}"
+    sed -i "s/^#*min_wal_size.*/min_wal_size = 1GB/" "${PG_CONF_FILE}"
+    sed -i "s/^#*max_wal_size.*/max_wal_size = 4GB/" "${PG_CONF_FILE}"
+    sed -i "s/^#*checkpoint_completion_target.*/checkpoint_completion_target = 0.9/" "${PG_CONF_FILE}"
+    sed -i "s/^#*wal_compression.*/wal_compression = on/" "${PG_CONF_FILE}"
+    
+    # Query planner
+    sed -i "s/^#*random_page_cost.*/random_page_cost = 1.1/" "${PG_CONF_FILE}"
+    sed -i "s/^#*effective_io_concurrency.*/effective_io_concurrency = 200/" "${PG_CONF_FILE}"
+    
+    # Autovacuum tuning
+    sed -i "s/^#*autovacuum.*/autovacuum = on/" "${PG_CONF_FILE}"
+    sed -i "s/^#*autovacuum_max_workers.*/autovacuum_max_workers = 3/" "${PG_CONF_FILE}"
+    sed -i "s/^#*autovacuum_naptime.*/autovacuum_naptime = 10s/" "${PG_CONF_FILE}"
+    
+    # Logging configuration
+    sed -i "s/^#*logging_collector.*/logging_collector = on/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_destination.*/log_destination = '${LOG_DESTINATION}'/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_directory.*/log_directory = 'log'/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_filename.*/log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_rotation_age.*/log_rotation_age = 1d/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_rotation_size.*/log_rotation_size = 100MB/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_min_duration_statement.*/log_min_duration_statement = ${LOG_MIN_DURATION}/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_connections.*/log_connections = ${LOG_CONNECTIONS}/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_disconnections.*/log_disconnections = ${LOG_DISCONNECTIONS}/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_line_prefix.*/log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_lock_waits.*/log_lock_waits = on/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_temp_files.*/log_temp_files = 0/" "${PG_CONF_FILE}"
+    sed -i "s/^#*log_autovacuum_min_duration.*/log_autovacuum_min_duration = 0/" "${PG_CONF_FILE}"
+    
+    # Statistics
+    sed -i "s/^#*track_activities.*/track_activities = on/" "${PG_CONF_FILE}"
+    sed -i "s/^#*track_counts.*/track_counts = on/" "${PG_CONF_FILE}"
+    sed -i "s/^#*track_io_timing.*/track_io_timing = on/" "${PG_CONF_FILE}"
+    sed -i "s/^#*track_functions.*/track_functions = all/" "${PG_CONF_FILE}"
+    
+    # Replication settings
+    if [[ "${ENABLE_REPLICATION}" == "yes" ]]; then
+        sed -i "s/^#*wal_level.*/wal_level = replica/" "${PG_CONF_FILE}"
+        sed -i "s/^#*max_wal_senders.*/max_wal_senders = 10/" "${PG_CONF_FILE}"
+        sed -i "s/^#*max_replication_slots.*/max_replication_slots = ${REPLICATION_SLOTS}/" "${PG_CONF_FILE}"
+        sed -i "s/^#*hot_standby.*/hot_standby = on/" "${PG_CONF_FILE}"
+    fi
+    
+    # WAL archiving
+    if [[ "${ENABLE_WAL_ARCHIVING}" == "yes" ]]; then
+        sed -i "s/^#*archive_mode.*/archive_mode = on/" "${PG_CONF_FILE}"
+        
+        if [[ "${WAL_ARCHIVE_DESTINATION}" =~ ^s3:// ]]; then
+            sed -i "s|^#*archive_command.*|archive_command = 'aws s3 cp %p ${WAL_ARCHIVE_DESTINATION}%f'|" "${PG_CONF_FILE}"
+        else
+            mkdir -p "${WAL_ARCHIVE_DESTINATION}"
+            chown postgres:postgres "${WAL_ARCHIVE_DESTINATION}"
+            chmod 700 "${WAL_ARCHIVE_DESTINATION}"
+            sed -i "s|^#*archive_command.*|archive_command = 'test ! -f ${WAL_ARCHIVE_DESTINATION}/%f && cp %p ${WAL_ARCHIVE_DESTINATION}/%f'|" "${PG_CONF_FILE}"
+        fi
+    fi
+    
+    log "PostgreSQL configuration updated"
+}
+
 configure_pg_hba() {
-  # backup
-  cp -n "${PG_HBA_FILE}" "${PG_HBA_FILE}.orig" || true
-  # ensure loopback present
-  grep -qE "^host\s+all\s+all\s+127.0.0.1/32" "${PG_HBA_FILE}" || echo "host    all             all             127.0.0.1/32            md5" >> "${PG_HBA_FILE}"
+    log_section "Configuring PostgreSQL Authentication (pg_hba.conf)"
+    
+    # Backup original
+    cp "${PG_HBA_FILE}" "${PG_HBA_FILE}.backup.$(date +%Y%m%d_%H%M%S)" || true
+    
+    # Create new pg_hba.conf
+    cat > "${PG_HBA_FILE}" << 'EOF'
+# PostgreSQL Client Authentication Configuration
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
 
-  # process ALLOWED_IPS as comma separated
-  IFS=',' read -ra cidrs <<< "${ALLOWED_IPS}"
-  for cidr in "${cidrs[@]}"; do
-    cidr_trimmed="$(echo "${cidr}" | xargs)"
-    # add only if not present
-    if ! grep -qE "^host\s+all\s+all\s+${cidr_trimmed}" "${PG_HBA_FILE}"; then
-      echo "host    all             all             ${cidr_trimmed}            md5" >> "${PG_HBA_FILE}"
-      log "Added pg_hba entry for ${cidr_trimmed}"
-    else
-      log "pg_hba already has entry for ${cidr_trimmed}"
-    fi
-  done
+# Local connections
+local   all             postgres                                peer
+local   all             all                                     peer
+
+# IPv4 local connections
+host    all             all             127.0.0.1/32            scram-sha-256
+
+# IPv6 local connections
+host    all             all             ::1/128                 scram-sha-256
+
+# Replication connections
+local   replication     all                                     peer
+host    replication     all             127.0.0.1/32            scram-sha-256
+host    replication     all             ::1/128                 scram-sha-256
+
+# Remote connections (configured during setup)
+EOF
+    
+    # Add allowed IPs
+    IFS=',' read -ra ip_array <<< "${ALLOWED_IPS}"
+    for ip in "${ip_array[@]}"; do
+        ip_trimmed=$(echo "${ip}" | xargs)
+        echo "host    all             all             ${ip_trimmed}            scram-sha-256" >> "${PG_HBA_FILE}"
+        
+        if [[ "${ENABLE_REPLICATION}" == "yes" ]]; then
+            echo "host    replication     all             ${ip_trimmed}            scram-sha-256" >> "${PG_HBA_FILE}"
+        fi
+    done
+    
+    chmod 640 "${PG_HBA_FILE}"
+    chown postgres:postgres "${PG_HBA_FILE}"
+    
+    log "pg_hba.conf configured with allowed IPs"
 }
 
-# Setup SSL certs if requested
-setup_ssl() {
-  if [[ "${PG_SSL}" == "yes" ]]; then
+configure_ssl() {
+    if [[ "${ENABLE_SSL}" != "yes" ]]; then
+        return 0
+    fi
+    
+    log_section "Configuring SSL/TLS"
+    
     mkdir -p "${PG_SSL_DIR}"
     chmod 700 "${PG_SSL_DIR}"
-    if [[ ! -f "${SSL_CERT_FILE}" || ! -f "${SSL_KEY_FILE}" ]]; then
-      log "Generating self-signed certificate for Postgres at ${SSL_CERT_FILE} / ${SSL_KEY_FILE}"
-      openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
-        -subj "/CN=$(hostname -f)" \
-        -keyout "${SSL_KEY_FILE}" -out "${SSL_CERT_FILE}"
-      chmod 600 "${SSL_KEY_FILE}"
-      chmod 644 "${SSL_CERT_FILE}"
-      chown -R postgres:postgres "${PG_SSL_DIR}" || true
-    else
-      log "User-supplied certs found; ensuring ownership and permissions."
-      chown postgres:postgres "${SSL_CERT_FILE}" "${SSL_KEY_FILE}" || true
-      chmod 600 "${SSL_KEY_FILE}" || true
+    
+    # Generate self-signed certificate if files don't exist
+    if [[ ! -f "${SSL_CERT_FILE}" ]] || [[ ! -f "${SSL_KEY_FILE}" ]]; then
+        log "Generating self-signed SSL certificate"
+        
+        openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
+            -subj "/C=US/ST=State/L=City/O=Organization/CN=$(hostname -f)" \
+            -keyout "${SSL_KEY_FILE}" \
+            -out "${SSL_CERT_FILE}"
+        
+        chmod 600 "${SSL_KEY_FILE}"
+        chmod 644 "${SSL_CERT_FILE}"
     fi
-
-    # ensure postgresql.conf points to files
-    if ! grep -q "ssl = on" "${PG_CONF_FILE}"; then
-      echo "ssl = on" >> "${PG_CONF_FILE}"
-    fi
-    sed -i -E "s|^#*ssl_cert_file = .*|ssl_cert_file = '${SSL_CERT_FILE}'|" "${PG_CONF_FILE}" || echo "ssl_cert_file = '${SSL_CERT_FILE}'" >> "${PG_CONF_FILE}"
-    sed -i -E "s|^#*ssl_key_file = .*|ssl_key_file = '${SSL_KEY_FILE}'|" "${PG_CONF_FILE}" || echo "ssl_key_file = '${SSL_KEY_FILE}'" >> "${PG_CONF_FILE}"
-    log "SSL configured for Postgres (self-signed or user cert)."
-  fi
+    
+    chown postgres:postgres "${SSL_CERT_FILE}" "${SSL_KEY_FILE}"
+    
+    # Configure PostgreSQL to use SSL
+    sed -i "s/^#*ssl.*/ssl = on/" "${PG_CONF_FILE}"
+    sed -i "s|^#*ssl_cert_file.*|ssl_cert_file = '${SSL_CERT_FILE}'|" "${PG_CONF_FILE}"
+    sed -i "s|^#*ssl_key_file.*|ssl_key_file = '${SSL_KEY_FILE}'|" "${PG_CONF_FILE}"
+    sed -i "s/^#*ssl_prefer_server_ciphers.*/ssl_prefer_server_ciphers = on/" "${PG_CONF_FILE}"
+    sed -i "s/^#*ssl_ciphers.*/ssl_ciphers = 'HIGH:MEDIUM:+3DES:!aNULL'/" "${PG_CONF_FILE}"
+    
+    log "SSL/TLS configured"
 }
 
-# Setup basic firewall rules with UFW
 configure_firewall() {
-  log "Configuring UFW firewall rules (idempotent)."
-  ufw allow OpenSSH >/dev/null || true
-  # allow DB port only from allowed IPs
-  IFS=',' read -ra cidrs <<< "${ALLOWED_IPS}"
-  for cidr in "${cidrs[@]}"; do
-    cidr_trimmed="$(echo "${cidr}" | xargs)"
-    ufw allow from "${cidr_trimmed}" to any port "${DB_PORT}" proto tcp || true
-  done
-  # enable ufw if not active
-  if ufw status | grep -q "Status: inactive"; then
+    if [[ "${ENABLE_FIREWALL}" != "yes" ]]; then
+        return 0
+    fi
+    
+    log_section "Configuring UFW Firewall"
+    
+    apt-get install -y -qq ufw
+    
+    # Reset UFW to clean state
+    ufw --force reset
+    
+    # Default policies
+    ufw default deny incoming
+    ufw default allow outgoing
+    
+    # Allow SSH
+    ufw allow "${SSH_PORT}/tcp" comment 'SSH'
+    
+    # Allow PostgreSQL from allowed IPs
+    IFS=',' read -ra ip_array <<< "${ALLOWED_IPS}"
+    for ip in "${ip_array[@]}"; do
+        ip_trimmed=$(echo "${ip}" | xargs)
+        if [[ "${ip_trimmed}" != "127.0.0.1/32" ]]; then
+            ufw allow from "${ip_trimmed}" to any port "${DB_PORT}" proto tcp comment 'PostgreSQL'
+        fi
+    done
+    
+    # Allow PgBouncer from allowed IPs
+    if [[ "${ENABLE_PGBOUNCER}" == "yes" ]]; then
+        for ip in "${ip_array[@]}"; do
+            ip_trimmed=$(echo "${ip}" | xargs)
+            if [[ "${ip_trimmed}" != "127.0.0.1/32" ]]; then
+                ufw allow from "${ip_trimmed}" to any port "${PGBOUNCER_PORT}" proto tcp comment 'PgBouncer'
+            fi
+        done
+    fi
+    
+    # Enable firewall
     ufw --force enable
-  fi
-  log "UFW rules applied."
+    
+    log "UFW firewall configured and enabled"
 }
 
-# Fail2ban minimal config for SSH; optionally more advanced jails can be added
 configure_fail2ban() {
-  log "Installing minimal Fail2Ban config for SSH."
-  apt-get install -y fail2ban
-  local jail_conf="/etc/fail2ban/jail.d/pg-setup.local"
-  cat > "${jail_conf}" <<-EOF
+    if [[ "${ENABLE_FAIL2BAN}" != "yes" ]]; then
+        return 0
+    fi
+    
+    log_section "Configuring Fail2Ban"
+    
+    apt-get install -y -qq fail2ban
+    
+    # Create PostgreSQL jail
+    cat > /etc/fail2ban/jail.d/postgresql.local << 'EOF'
 [sshd]
 enabled = true
-port    = ssh
-logpath = %(sshd_log)s
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
 maxretry = 5
+bantime = 3600
+findtime = 600
 
+[postgresql]
+enabled = true
+port = 5432
+filter = postgresql
+logpath = /var/log/postgresql/postgresql-*.log
+maxretry = 5
+bantime = 3600
+findtime = 600
 EOF
-  systemctl restart fail2ban || true
-  log "Fail2Ban restarted."
+    
+    # Create PostgreSQL filter
+    cat > /etc/fail2ban/filter.d/postgresql.conf << 'EOF'
+[Definition]
+failregex = ^.*FATAL:.*authentication failed for user.*$
+            ^.*FATAL:.*password authentication failed for user.*$
+            ^.*FATAL:.*no pg_hba.conf entry for host.*$
+ignoreregex =
+EOF
+    
+    systemctl enable fail2ban
+    systemctl restart fail2ban
+    
+    log "Fail2Ban configured for PostgreSQL and SSH"
 }
 
-# Setup backup and restore scripts
-install_maintenance_scripts() {
-  mkdir -p "${BACKUP_DIR}"
-  chown -R postgres:postgres "${BACKUP_DIR}"
-  chmod 700 "${BACKUP_DIR}"
-
-  # backup script (logical per-db)
-  cat > /usr/local/bin/pg_backup.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-BACKUP_DIR="/var/backups/postgresql"
-TIMESTAMP=$(date +%F_%H%M%S)
-mkdir -p "${BACKUP_DIR}"
-# dump each database separately (except template0, template1)
-sudo -u postgres psql -At -c "select datname from pg_database where datistemplate = false" | while read -r db; do
-  echo "Backing up ${db}..."
-  sudo -u postgres pg_dump -Fc -d "${db}" -f "${BACKUP_DIR}/${db}_${TIMESTAMP}.dump"
-done
-# rotate old backups
-find "${BACKUP_DIR}" -type f -mtime +${BACKUP_RETENTION_DAYS:-14} -delete || true
-EOF
-  chmod +x /usr/local/bin/pg_backup.sh
-
-  # restore script (asks for file)
-  cat > /usr/local/bin/pg_restore_latest.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 /path/to/backup.dump"
-  exit 1
-fi
-BACKUPFILE="$1"
-if [[ ! -f "${BACKUPFILE}" ]]; then
-  echo "Backup file not found: ${BACKUPFILE}"
-  exit 1
-fi
-echo "This will restore the backup into a new database schema. Please ensure the target DB exists."
-read -rp "Target database name: " TARGETDB
-sudo -u postgres pg_restore -d "${TARGETDB}" --clean --no-owner "${BACKUPFILE}"
-echo "Restore complete."
-EOF
-  chmod +x /usr/local/bin/pg_restore_latest.sh
-
-  # restart script
-  cat > /usr/local/bin/pg_restart.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-systemctl restart postgresql
-systemctl status postgresql --no-pager
-EOF
-  chmod +x /usr/local/bin/pg_restart.sh
-
-  # status script
-  cat > /usr/local/bin/pg_status.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "Postgres service:"
-systemctl status postgresql --no-pager
-echo
-echo "Active connections:"
-sudo -u postgres psql -c "select datname, count(*) from pg_stat_activity group by datname;"
-EOF
-  chmod +x /usr/local/bin/pg_status.sh
-
-  log "Maintenance scripts installed in /usr/local/bin: pg_backup.sh, pg_restore_latest.sh, pg_restart.sh, pg_status.sh"
-}
-
-# Install and configure pgbouncer (if enabled)
 install_pgbouncer() {
-  if [[ "${PGBOUNCER_ENABLED}" != "yes" ]]; then
-    log "pgbouncer disabled by configuration."
-    return
-  fi
-  if dpkg -l | grep -q pgbouncer; then
-    log "pgbouncer already installed."
-  else
-    apt-get install -y pgbouncer
-  fi
-
-  mkdir -p /etc/pgbouncer
-  cat > /etc/pgbouncer/pgbouncer.ini <<-EOF
+    if [[ "${ENABLE_PGBOUNCER}" != "yes" ]]; then
+        return 0
+    fi
+    
+    log_section "Installing and Configuring PgBouncer"
+    
+    apt-get install -y -qq pgbouncer
+    
+    # Create PgBouncer configuration
+    cat > /etc/pgbouncer/pgbouncer.ini << EOF
 [databases]
-# admin/db mapping: direct to postgres for now; keep DB names the same
-* = host=127.0.0.1 port=${DB_PORT}
+* = host=127.0.0.1 port=${DB_PORT} pool_size=${PGBOUNCER_DEFAULT_POOL_SIZE}
 
 [pgbouncer]
-listen_addr = 127.0.0.1
-listen_port = 6432
-auth_type = md5
+listen_addr = 0.0.0.0
+listen_port = ${PGBOUNCER_PORT}
+auth_type = scram-sha-256
 auth_file = /etc/pgbouncer/userlist.txt
-pool_mode = transaction
+pool_mode = ${PGBOUNCER_POOL_MODE}
+max_client_conn = ${PGBOUNCER_MAX_CLIENT_CONN}
+default_pool_size = ${PGBOUNCER_DEFAULT_POOL_SIZE}
 server_reset_query = DISCARD ALL
-max_client_conn = 200
-default_pool_size = 20
+server_check_delay = 30
+max_db_connections = ${DB_MAX_CONNECTIONS}
+log_connections = 1
+log_disconnections = 1
+log_pooler_errors = 1
+stats_period = 60
 EOF
-
-  # create userlist file from postgres users (empty now)
-  touch /etc/pgbouncer/userlist.txt
-  chown pgbouncer:pgbouncer /etc/pgbouncer/userlist.txt
-  chmod 600 /etc/pgbouncer/userlist.txt
-
-  systemctl enable --now pgbouncer
-  log "pgbouncer configured and started on 127.0.0.1:6432. Update /etc/pgbouncer/userlist.txt with \"\\\"username\\\" \\\"md5passwordhash\\\"\" entries or use provided helper."
+    
+    # Create empty userlist
+    touch /etc/pgbouncer/userlist.txt
+    chown postgres:postgres /etc/pgbouncer/userlist.txt
+    chmod 600 /etc/pgbouncer/userlist.txt
+    
+    systemctl enable pgbouncer
+    systemctl restart pgbouncer
+    
+    log "PgBouncer installed and configured on port ${PGBOUNCER_PORT}"
 }
 
-# Helper to add a DB user and database (script)
-install_create_db_user_script() {
-  cat > /usr/local/bin/pg_create_db_user.sh <<'EOF'
+# ============================================================================
+# MAINTENANCE SCRIPTS
+# ============================================================================
+
+create_maintenance_scripts() {
+    log_section "Creating Maintenance Scripts"
+    
+    mkdir -p "${BACKUP_DIR}" "${MONITORING_DIR}"
+    chown postgres:postgres "${BACKUP_DIR}"
+    chmod 700 "${BACKUP_DIR}"
+    
+    # ==================== CREATE DATABASE AND USER SCRIPT ====================
+    cat > "${SCRIPTS_DIR}/pg-create-db-user.sh" << 'SCRIPT_CREATE_DB_USER'
 #!/usr/bin/env bash
-# Usage: pg_create_db_user.sh dbname username
+# Create PostgreSQL database and user
+
 set -euo pipefail
+
 if [[ $# -lt 2 ]]; then
-  echo "Usage: $0 <dbname> <username>"
-  exit 1
+    echo "Usage: $0 <database_name> <username> [options]"
+    echo "Options:"
+    echo "  --no-password     Skip password prompt (use for local trust)"
+    echo "  --owner-only      Don't grant public access"
+    exit 1
 fi
-DB="$1"; USER="$2"
-read -rp "Password for ${USER}: " -s PWD; echo
-sudo -u postgres psql -c "CREATE USER ${USER} WITH PASSWORD '${PWD}';" || true
-sudo -u postgres psql -c "CREATE DATABASE ${DB} WITH OWNER = ${USER};" || true
-echo "Created DB ${DB} and user ${USER}."
-# optionally add to pgbouncer userlist if installed
+
+DB_NAME="$1"
+DB_USER="$2"
+shift 2
+
+NO_PASSWORD=false
+OWNER_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-password) NO_PASSWORD=true; shift ;;
+        --owner-only) OWNER_ONLY=true; shift ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
+
+if [[ "${NO_PASSWORD}" == "false" ]]; then
+    read -rsp "Enter password for user ${DB_USER}: " DB_PASSWORD
+    echo
+    read -rsp "Confirm password: " DB_PASSWORD_CONFIRM
+    echo
+    
+    if [[ "${DB_PASSWORD}" != "${DB_PASSWORD_CONFIRM}" ]]; then
+        echo "Passwords don't match!"
+        exit 1
+    fi
+fi
+
+# Create user
+if [[ "${NO_PASSWORD}" == "true" ]]; then
+    sudo -u postgres psql -c "CREATE USER ${DB_USER};" 2>/dev/null || echo "User ${DB_USER} already exists"
+else
+    sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';" 2>/dev/null || echo "User ${DB_USER} already exists"
+fi
+
+# Create database
+sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};" 2>/dev/null || echo "Database ${DB_NAME} already exists"
+
+# Grant privileges
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
+
+if [[ "${OWNER_ONLY}" == "false" ]]; then
+    sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
+fi
+
+echo "✓ Database '${DB_NAME}' and user '${DB_USER}' created successfully"
+
+# Add to PgBouncer if installed
+if [[ -f /etc/pgbouncer/userlist.txt && "${NO_PASSWORD}" == "false" ]]; then
+    # Generate SCRAM-SHA-256 hash
+    HASH=$(sudo -u postgres psql -tAc "SELECT concat('SCRAM-SHA-256\$4096:', encode(digest('${DB_PASSWORD}${DB_USER}', 'sha256'), 'base64'));")
+    echo "\"${DB_USER}\" \"${HASH}\"" >> /etc/pgbouncer/userlist.txt
+    systemctl reload pgbouncer
+    echo "✓ User added to PgBouncer"
+fi
+
+echo ""
+echo "Connection strings:"
+echo "  Direct:    postgresql://${DB_USER}:PASSWORD@localhost:5432/${DB_NAME}"
 if [[ -f /etc/pgbouncer/userlist.txt ]]; then
-  # create md5 password hash
-  HASH=$(sudo -u postgres psql -tA -c "select md5('${PWD}'||'${USER}');")
-  echo "\"${USER}\" \"md5${HASH}\"" >> /etc/pgbouncer/userlist.txt
-  chown pgbouncer:pgbouncer /etc/pgbouncer/userlist.txt || true
-  chmod 600 /etc/pgbouncer/userlist.txt
-  systemctl restart pgbouncer || true
-  echo "Added user to pgbouncer userlist."
+    echo "  PgBouncer: postgresql://${DB_USER}:PASSWORD@localhost:6432/${DB_NAME}"
 fi
+SCRIPT_CREATE_DB_USER
+    chmod +x "${SCRIPTS_DIR}/pg-create-db-user.sh"
+    
+    # ==================== BACKUP SCRIPT ====================
+    cat > "${SCRIPTS_DIR}/pg-backup.sh" << 'SCRIPT_BACKUP'
+#!/usr/bin/env bash
+# PostgreSQL backup script
+
+set -euo pipefail
+
+BACKUP_DIR="/var/backups/postgresql"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-14}
+COMPRESSION=${BACKUP_COMPRESSION:-yes}
+
+mkdir -p "${BACKUP_DIR}"
+
+echo "Starting PostgreSQL backup at $(date)"
+
+# Get list of databases
+DATABASES=$(sudo -u postgres psql -At -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';")
+
+for db in ${DATABASES}; do
+    echo "Backing up database: ${db}"
+    
+    BACKUP_FILE="${BACKUP_DIR}/${db}_${TIMESTAMP}.sql"
+    
+    if [[ "${COMPRESSION}" == "yes" ]]; then
+        sudo -u postgres pg_dump -Fc "${db}" > "${BACKUP_FILE}.custom"
+        echo "  ✓ ${db} backed up to ${BACKUP_FILE}.custom"
+    else
+        sudo -u postgres pg_dump "${db}" > "${BACKUP_FILE}"
+        echo "  ✓ ${db} backed up to ${BACKUP_FILE}"
+    fi
+done
+
+# Backup globals (roles, tablespaces, etc.)
+echo "Backing up globals..."
+sudo -u postgres pg_dumpall --globals-only > "${BACKUP_DIR}/globals_${TIMESTAMP}.sql"
+
+# Cleanup old backups
+echo "Cleaning up backups older than ${RETENTION_DAYS} days..."
+find "${BACKUP_DIR}" -type f -mtime +${RETENTION_DAYS} -delete
+
+# Upload to S3 if configured
+if [[ -n "${S3_BUCKET:-}" ]]; then
+    echo "Uploading to S3: ${S3_BUCKET}"
+    aws s3 sync "${BACKUP_DIR}" "${S3_BUCKET}/postgresql-backups/$(hostname)/" --delete
+fi
+
+echo "Backup completed at $(date)"
+SCRIPT_BACKUP
+    chmod +x "${SCRIPTS_DIR}/pg-backup.sh"
+    
+    # ==================== RESTORE SCRIPT ====================
+    cat > "${SCRIPTS_DIR}/pg-restore.sh" << 'SCRIPT_RESTORE'
+#!/usr/bin/env bash
+# PostgreSQL restore script
+
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+    echo "Usage: $0 <backup_file> <target_database>"
+    echo ""
+    echo "Available backups:"
+    ls -lh /var/backups/postgresql/*.{sql,custom} 2>/dev/null | tail -20
+    exit 1
+fi
+
+BACKUP_FILE="$1"
+TARGET_DB="$2"
+
+if [[ ! -f "${BACKUP_FILE}" ]]; then
+    echo "Error: Backup file not found: ${BACKUP_FILE}"
+    exit 1
+fi
+
+echo "WARNING: This will restore ${BACKUP_FILE} into database '${TARGET_DB}'"
+echo "Existing data in '${TARGET_DB}' may be affected."
+read -rp "Continue? (yes/no): " CONFIRM
+
+if [[ "${CONFIRM}" != "yes" ]]; then
+    echo "Restore cancelled"
+    exit 0
+fi
+
+# Determine restore method based on file extension
+if [[ "${BACKUP_FILE}" == *.custom ]]; then
+    echo "Restoring custom format backup..."
+    sudo -u postgres pg_restore -d "${TARGET_DB}" --clean --if-exists --no-owner --no-acl "${BACKUP_FILE}"
+else
+    echo "Restoring SQL backup..."
+    sudo -u postgres psql -d "${TARGET_DB}" < "${BACKUP_FILE}"
+fi
+
+echo "✓ Restore completed successfully"
+SCRIPT_RESTORE
+    chmod +x "${SCRIPTS_DIR}/pg-restore.sh"
+    
+    # ==================== STATUS SCRIPT ====================
+    cat > "${SCRIPTS_DIR}/pg-status.sh" << 'SCRIPT_STATUS'
+#!/usr/bin/env bash
+# PostgreSQL status and health check
+
+set -euo pipefail
+
+echo "========================================="
+echo "PostgreSQL Status Report"
+echo "========================================="
+echo ""
+
+# Service status
+echo "Service Status:"
+systemctl status postgresql --no-pager -l | head -20
+echo ""
+
+# Connection status
+echo "Connection Status:"
+sudo -u postgres pg_isready -q && echo "✓ PostgreSQL is accepting connections" || echo "✗ PostgreSQL is NOT accepting connections"
+echo ""
+
+# Active connections
+echo "Active Connections:"
+sudo -u postgres psql -c "
+SELECT 
+    datname as database,
+    count(*) as connections,
+    max(state) as state
+FROM pg_stat_activity 
+WHERE datname IS NOT NULL
+GROUP BY datname
+ORDER BY connections DESC;
+"
+echo ""
+
+# Database sizes
+echo "Database Sizes:"
+sudo -u postgres psql -c "
+SELECT 
+    datname as database,
+    pg_size_pretty(pg_database_size(datname)) as size
+FROM pg_database
+WHERE datistemplate = false
+ORDER BY pg_database_size(datname) DESC;
+"
+echo ""
+
+# Replication status
+echo "Replication Status:"
+sudo -u postgres psql -c "SELECT * FROM pg_stat_replication;" 2>/dev/null || echo "No replication configured"
+echo ""
+
+# Long running queries
+echo "Long Running Queries (>1 minute):"
+sudo -u postgres psql -c "
+SELECT 
+    pid,
+    now() - pg_stat_activity.query_start AS duration,
+    query,
+    state
+FROM pg_stat_activity
+WHERE (now() - pg_stat_activity.query_start) > interval '1 minute'
+  AND state != 'idle'
+ORDER BY duration DESC;
+" 2>/dev/null || echo "No long running queries"
+echo ""
+
+# Locks
+echo "Lock Status:"
+sudo -u postgres psql -c "
+SELECT 
+    locktype,
+    database,
+    relation::regclass,
+    mode,
+    granted,
+    count(*)
+FROM pg_locks
+GROUP BY locktype, database, relation, mode, granted
+ORDER BY count(*) DESC
+LIMIT 10;
+" 2>/dev/null || echo "No locks"
+echo ""
+
+# PgBouncer status
+if systemctl is-active --quiet pgbouncer; then
+    echo "PgBouncer Status:"
+    echo "SHOW POOLS;" | psql -U pgbouncer -p 6432 pgbouncer 2>/dev/null || echo "PgBouncer stats unavailable"
+fi
+
+echo "========================================="
+SCRIPT_STATUS
+    chmod +x "${SCRIPTS_DIR}/pg-status.sh"
+    
+    # ==================== RESTART SCRIPT ====================
+    cat > "${SCRIPTS_DIR}/pg-restart.sh" << 'SCRIPT_RESTART'
+#!/usr/bin/env bash
+# Safe PostgreSQL restart
+
+set -euo pipefail
+
+echo "Restarting PostgreSQL..."
+systemctl restart postgresql
+
+sleep 2
+
+if systemctl is-active --quiet postgresql; then
+    echo "✓ PostgreSQL restarted successfully"
+    sudo -u postgres pg_isready
+else
+    echo "✗ PostgreSQL failed to start"
+    systemctl status postgresql --no-pager
+    exit 1
+fi
+
+if systemctl is-active --quiet pgbouncer; then
+    echo "Restarting PgBouncer..."
+    systemctl restart pgbouncer
+    echo "✓ PgBouncer restarted"
+fi
+SCRIPT_RESTART
+    chmod +x "${SCRIPTS_DIR}/pg-restart.sh"
+    
+    # ==================== LOG ANALYSIS SCRIPT ====================
+    cat > "${SCRIPTS_DIR}/pg-logs.sh" << 'SCRIPT_LOGS'
+#!/usr/bin/env bash
+# PostgreSQL log analysis
+
+set -euo pipefail
+
+LINES=${1:-100}
+LOG_DIR="/var/log/postgresql"
+
+echo "Recent PostgreSQL Logs (last ${LINES} lines):"
+echo "========================================="
+
+# Find most recent log file
+LATEST_LOG=$(ls -t ${LOG_DIR}/postgresql-*.log 2>/dev/null | head -1)
+
+if [[ -n "${LATEST_LOG}" ]]; then
+    tail -n "${LINES}" "${LATEST_LOG}"
+else
+    echo "No log files found in ${LOG_DIR}"
+fi
+
+echo ""
+echo "========================================="
+echo "Error Summary (last 24 hours):"
+find ${LOG_DIR} -name "postgresql-*.log" -mtime -1 -exec grep -i "ERROR\|FATAL\|PANIC" {} \; | tail -20
+
+echo ""
+echo "========================================="
+echo "Slow Queries (last 24 hours):"
+find ${LOG_DIR} -name "postgresql-*.log" -mtime -1 -exec grep "duration:" {} \; | sort -t: -k2 -n | tail -20
+SCRIPT_LOGS
+    chmod +x "${SCRIPTS_DIR}/pg-logs.sh"
+    
+    # ==================== VACUUM SCRIPT ====================
+    cat > "${SCRIPTS_DIR}/pg-vacuum.sh" << 'SCRIPT_VACUUM'
+#!/usr/bin/env bash
+# PostgreSQL vacuum and analyze
+
+set -euo pipefail
+
+MODE=${1:-analyze}
+
+echo "Running VACUUM ${MODE^^} on all databases..."
+
+DATABASES=$(sudo -u postgres psql -At -c "SELECT datname FROM pg_database WHERE datistemplate = false;")
+
+for db in ${DATABASES}; do
+    echo "Processing database: ${db}"
+    
+    case "${MODE}" in
+        full)
+            sudo -u postgres psql -d "${db}" -c "VACUUM FULL VERBOSE;"
+            ;;
+        analyze)
+            sudo -u postgres psql -d "${db}" -c "VACUUM ANALYZE VERBOSE;"
+            ;;
+        *)
+            sudo -u postgres psql -d "${db}" -c "VACUUM VERBOSE;"
+            ;;
+    esac
+    
+    echo "✓ ${db} completed"
+done
+
+echo "All databases vacuumed successfully"
+SCRIPT_VACUUM
+    chmod +x "${SCRIPTS_DIR}/pg-vacuum.sh"
+    
+    # ==================== MONITORING SCRIPT ====================
+    cat > "${SCRIPTS_DIR}/pg-monitor.sh" << 'SCRIPT_MONITOR'
+#!/usr/bin/env bash
+# PostgreSQL monitoring and metrics collection
+
+set -euo pipefail
+
+MONITORING_DIR="/opt/postgresql-monitoring"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "${MONITORING_DIR}/metrics"
+
+# Collect metrics
+{
+    echo "timestamp: $(date -Iseconds)"
+    echo "---"
+    
+    # Connection metrics
+    echo "connections:"
+    sudo -u postgres psql -At -c "SELECT count(*) FROM pg_stat_activity;" | sed 's/^/  total: /'
+    sudo -u postgres psql -At -c "SELECT count(*) FROM pg_stat_activity WHERE state = 'active';" | sed 's/^/  active: /'
+    sudo -u postgres psql -At -c "SELECT count(*) FROM pg_stat_activity WHERE state = 'idle';" | sed 's/^/  idle: /'
+    
+    # Database sizes
+    echo "database_sizes:"
+    sudo -u postgres psql -At -c "SELECT datname, pg_database_size(datname) FROM pg_database WHERE datistemplate = false;" | \
+        while IFS='|' read -r db size; do
+            echo "  ${db}: ${size}"
+        done
+    
+    # Cache hit ratio
+    echo "cache_hit_ratio:"
+    sudo -u postgres psql -At -c "
+        SELECT 
+            sum(heap_blks_hit) / nullif(sum(heap_blks_hit) + sum(heap_blks_read), 0) * 100 
+        FROM pg_statio_user_tables;
+    " | sed 's/^/  percentage: /'
+    
+    # Transaction rate
+    echo "transactions:"
+    sudo -u postgres psql -At -c "SELECT sum(xact_commit + xact_rollback) FROM pg_stat_database;" | sed 's/^/  total: /'
+    
+} > "${MONITORING_DIR}/metrics/metrics_${TIMESTAMP}.yaml"
+
+# Cleanup old metrics
+find "${MONITORING_DIR}/metrics" -type f -mtime +${MONITORING_RETENTION_DAYS:-30} -delete
+
+echo "Metrics collected: ${MONITORING_DIR}/metrics/metrics_${TIMESTAMP}.yaml"
+SCRIPT_MONITOR
+    chmod +x "${SCRIPTS_DIR}/pg-monitor.sh"
+    
+    log "Maintenance scripts created in ${SCRIPTS_DIR}"
+}
+
+# ============================================================================
+# CRON JOBS
+# ============================================================================
+
+setup_cron_jobs() {
+    if [[ "${ENABLE_BACKUPS}" != "yes" ]]; then
+        return 0
+    fi
+    
+    log_section "Setting Up Automated Tasks"
+    
+    # Determine cron schedule
+    case "${BACKUP_SCHEDULE}" in
+        hourly)
+            CRON_SCHEDULE="0 * * * *"
+            ;;
+        daily)
+            CRON_SCHEDULE="0 2 * * *"
+            ;;
+        weekly)
+            CRON_SCHEDULE="0 2 * * 0"
+            ;;
+        *)
+            CRON_SCHEDULE="0 2 * * *"
+            ;;
+    esac
+    
+    # Create cron file
+    cat > /etc/cron.d/postgresql-maintenance << EOF
+# PostgreSQL automated maintenance tasks
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Backup (${BACKUP_SCHEDULE})
+${CRON_SCHEDULE} root ${SCRIPTS_DIR}/pg-backup.sh >> ${LOG_DIR}/backup.log 2>&1
+
+# Vacuum analyze (weekly)
+0 3 * * 0 root ${SCRIPTS_DIR}/pg-vacuum.sh analyze >> ${LOG_DIR}/vacuum.log 2>&1
+
+# Monitoring (every 5 minutes)
+*/5 * * * * root ${SCRIPTS_DIR}/pg-monitor.sh >> ${LOG_DIR}/monitor.log 2>&1
 EOF
-  chmod +x /usr/local/bin/pg_create_db_user.sh
+    
+    chmod 644 /etc/cron.d/postgresql-maintenance
+    
+    log "Cron jobs configured for backups and maintenance"
 }
 
-# Apply configuration, restart postgres and basic checks
-finalize_and_restart() {
-  log "Reloading postgresql config and restarting..."
-  systemctl daemon-reload || true
-  systemctl restart postgresql
-  sleep 1
-  systemctl status postgresql --no-pager || true
-  log "Running quick pg_isready check..."
-  sudo -u postgres pg_isready -p "${DB_PORT}" -q && log "Postgres reports ready on port ${DB_PORT}." || log "pg_isready reports not ready (check logs)."
+# ============================================================================
+# LOG ROTATION
+# ============================================================================
+
+setup_logrotate() {
+    log_section "Configuring Log Rotation"
+    
+    cat > /etc/logrotate.d/postgresql-setup << 'EOF'
+/var/log/postgresql-setup/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    missingok
+    create 0640 root root
+}
+EOF
+    
+    log "Log rotation configured"
 }
 
-# MAIN sequence
-install_basic_tools
-install_pgdg_repo
-install_postgres
-tune_postgres
-configure_pg_hba
-if [[ "${PG_SSL}" == "yes" ]]; then
-  mkdir -p "$(dirname "${SSL_CERT_FILE}")"
-  setup_ssl
-fi
-configure_firewall
-configure_fail2ban
-install_maintenance_scripts
-install_pgbouncer
-install_create_db_user_script
-finalize_and_restart
+# ============================================================================
+# POST-INSTALLATION
+# ============================================================================
 
-echo
-log "Setup complete. Helpful next steps:."
-cat <<-EOHELP
+apply_configuration() {
+    log_section "Applying Configuration"
+    
+    # Reload PostgreSQL
+    systemctl reload postgresql || systemctl restart postgresql
+    
+    # Wait for PostgreSQL to be ready
+    sleep 2
+    
+    # Verify PostgreSQL is running
+    if sudo -u postgres pg_isready -p "${DB_PORT}" -q; then
+        log "✓ PostgreSQL is accepting connections on port ${DB_PORT}"
+    else
+        log_error "PostgreSQL is not ready. Check logs with: journalctl -u postgresql -n 50"
+        exit 1
+    fi
+    
+    # Reload PgBouncer if enabled
+    if [[ "${ENABLE_PGBOUNCER}" == "yes" ]]; then
+        systemctl reload pgbouncer || systemctl restart pgbouncer
+        log "✓ PgBouncer reloaded"
+    fi
+}
 
-- State file saved: ${STATE_FILE}
-- Backup directory: ${BACKUP_DIR}. Use /usr/local/bin/pg_backup.sh to run a backup.
-- Create DB/user helper: /usr/local/bin/pg_create_db_user.sh
-- Restore helper: /usr/local/bin/pg_restore_latest.sh
-- Pgbouncer listens on 127.0.0.1:6432 (if enabled). Point your app's pool to pgbouncer:
-    DATABASE_URL=postgresql://user:pass@127.0.0.1:6432/dbname
+create_summary() {
+    log_section "Setup Summary"
+    
+    cat << EOF
 
-Security checklist (please follow):
-- Ensure only allowed IPs appear in ${PG_HBA_FILE} and UFW.
-- Store backups off-server (s3/R2/other). If you enabled WAL archiving, ensure AWS credentials are available.
-- Test the restore process immediately in a staging environment.
+╔════════════════════════════════════════════════════════════════╗
+║                                                                ║
+║        PostgreSQL ${PG_VERSION} Enterprise Setup Complete!           ║
+║                                                                ║
+╚════════════════════════════════════════════════════════════════╝
 
-Important notes:
-- This script aims to be conservative and idempotent. Still: review config files in ${PG_CONF_DIR} and /etc/pgbouncer before deploying to production.
-- For high availability, streaming replication, automated failover, and managed-like operations, plan a second node with synchronous replication or consider patroni/pg_auto_failover later.
-EOHELP
+CONFIGURATION SUMMARY:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-exit 0
+Database:
+  • Listen Address: ${DB_LISTEN_ADDRESSES}
+  • Port: ${DB_PORT}
+  • Max Connections: ${DB_MAX_CONNECTIONS}
+  • SSL Enabled: ${ENABLE_SSL}
+
+Memory Configuration:
+  • Shared Buffers: ${DB_SHARED_BUFFERS}MB
+  • Effective Cache: ${DB_EFFECTIVE_CACHE}MB
+  • Work Memory: ${DB_WORK_MEM}MB
+  • Maintenance Work Memory: ${DB_MAINTENANCE_WORK_MEM}MB
+
+Security:
+  • Firewall (UFW): ${ENABLE_FIREWALL}
+  • Fail2Ban: ${ENABLE_FAIL2BAN}
+  • Allowed IPs: ${ALLOWED_IPS}
+
+Backup & HA:
+  • Automated Backups: ${ENABLE_BACKUPS}
+  • Backup Schedule: ${BACKUP_SCHEDULE}
+  • Retention: ${BACKUP_RETENTION_DAYS} days
+  • WAL Archiving: ${ENABLE_WAL_ARCHIVING}
+  • Replication: ${ENABLE_REPLICATION}
+
+Connection Pooling:
+  • PgBouncer: ${ENABLE_PGBOUNCER}
+$(if [[ "${ENABLE_PGBOUNCER}" == "yes" ]]; then
+    echo "  • PgBouncer Port: ${PGBOUNCER_PORT}"
+    echo "  • Pool Mode: ${PGBOUNCER_POOL_MODE}"
+fi)
+
+AVAILABLE COMMANDS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Database Management:
+  pg-create-db-user.sh <db_name> <username>  Create database and user
+  pg-status.sh                                Show detailed status
+  pg-restart.sh                               Safe restart
+
+Backup & Restore:
+  pg-backup.sh                                Run manual backup
+  pg-restore.sh <backup_file> <target_db>     Restore from backup
+
+Maintenance:
+  pg-vacuum.sh [full|analyze]                 Vacuum databases
+  pg-logs.sh [lines]                          View recent logs
+  pg-monitor.sh                               Collect metrics
+
+QUICK START:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Create your first database:
+   sudo pg-create-db-user.sh myapp myapp_user
+
+2. Check status:
+   sudo pg-status.sh
+
+3. Connect to PostgreSQL:
+   psql -h localhost -p ${DB_PORT} -U myapp_user -d myapp
+
+$(if [[ "${ENABLE_PGBOUNCER}" == "yes" ]]; then
+    echo "4. Connect via PgBouncer (recommended):"
+    echo "   psql -h localhost -p ${PGBOUNCER_PORT} -U myapp_user -d myapp"
+fi)
+
+IMPORTANT SECURITY NOTES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠  Change the default postgres user password:
+   sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'strong_password';"
+
+⚠  Review firewall rules:
+   sudo ufw status verbose
+
+⚠  Review authentication settings:
+   sudo vim ${PG_HBA_FILE}
+
+⚠  Test backups regularly:
+   sudo pg-backup.sh
+
+⚠  Monitor logs:
+   sudo pg-logs.sh
+
+CONFIGURATION FILES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• State File: ${STATE_FILE}
+• PostgreSQL Config: ${PG_CONF_FILE}
+• Authentication: ${PG_HBA_FILE}
+• Backup Directory: ${BACKUP_DIR}
+• Log Directory: ${LOG_DIR}
+$(if [[ "${ENABLE_PGBOUNCER}" == "yes" ]]; then
+    echo "• PgBouncer Config: /etc/pgbouncer/pgbouncer.ini"
+fi)
+
+NEXT STEPS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Secure the postgres user password
+2. Create your application databases and users
+3. Test database connections
+4. Verify backups are working
+5. Set up monitoring dashboards (optional)
+6. Configure application connection strings
+
+Need help? Check logs at: ${LOG_DIR}/setup.log
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+EOF
+}
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+main() {
+    # Setup
+    check_root
+    mkdir -p "${LOG_DIR}"
+    
+    log_section "PostgreSQL ${PG_VERSION} Enterprise Setup - Version ${SCRIPT_VERSION}"
+    
+    check_os
+    
+    # Load previous state if exists
+    load_state || true
+    
+    # Interactive configuration
+    echo ""
+    echo "This script will set up PostgreSQL ${PG_VERSION} with enterprise features."
+    echo "Previous settings will be shown in [brackets] if you've run this before."
+    echo ""
+    read -p "Press Enter to begin configuration..."
+    echo ""
+    
+    configure_database
+    configure_security
+    configure_backups
+    configure_high_availability
+    configure_connection_pooling
+    configure_monitoring
+    
+    # Save configuration
+    save_state
+    
+    # Confirm before proceeding
+    echo ""
+    log_warn "Configuration complete. Ready to install and configure PostgreSQL."
+    read -p "Proceed with installation? (yes/no): " -r
+    if [[ ! "${REPLY}" =~ ^[Yy][Ee][Ss]$ ]]; then
+        log "Installation cancelled by user"
+        exit 0
+    fi
+    
+    # Installation
+    install_prerequisites
+    install_postgresql_repository
+    install_postgresql
+    install_additional_tools
+    
+    # Configuration
+    configure_postgresql
+    configure_pg_hba
+    configure_ssl
+    configure_firewall
+    configure_fail2ban
+    install_pgbouncer
+    
+    # Maintenance
+    create_maintenance_scripts
+    setup_cron_jobs
+    setup_logrotate
+    
+    # Finalize
+    apply_configuration
+    create_summary
+    
+    log "Setup completed successfully at $(date)"
+}
+
+# Run main function
+main "$@"
