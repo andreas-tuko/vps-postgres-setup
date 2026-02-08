@@ -12,7 +12,7 @@ export DEBIAN_FRONTEND=noninteractive
 # CONFIGURATION & CONSTANTS
 # ============================================================================
 
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.1"
 readonly PG_VERSION="17"
 readonly STATE_FILE="/etc/postgresql-setup.state"
 readonly BACKUP_DIR="/var/backups/postgresql"
@@ -296,6 +296,11 @@ configure_backups() {
     BACKUP_COMPRESSION="${BACKUP_COMPRESSION:-yes}"
     REMOTE_BACKUP_ENABLED="${REMOTE_BACKUP_ENABLED:-no}"
     
+    # Initialize remote backup variables even if disabled (for save_state)
+    REMOTE_BACKUP_TYPE="${REMOTE_BACKUP_TYPE:-s3}"
+    S3_BUCKET="${S3_BUCKET:-}"
+    S3_REGION="${S3_REGION:-us-east-1}"
+    
     ask_yn "Enable automated backups" "${ENABLE_BACKUPS}" ENABLE_BACKUPS
     
     if [[ "${ENABLE_BACKUPS}" == "yes" ]]; then
@@ -305,10 +310,6 @@ configure_backups() {
         ask_yn "Enable remote backup (S3/cloud storage)" "${REMOTE_BACKUP_ENABLED}" REMOTE_BACKUP_ENABLED
         
         if [[ "${REMOTE_BACKUP_ENABLED}" == "yes" ]]; then
-            REMOTE_BACKUP_TYPE="${REMOTE_BACKUP_TYPE:-s3}"
-            S3_BUCKET="${S3_BUCKET:-}"
-            S3_REGION="${S3_REGION:-us-east-1}"
-            
             ask "Remote backup type (s3/azure/gcs)" "${REMOTE_BACKUP_TYPE}" REMOTE_BACKUP_TYPE
             ask "S3 bucket name (s3://bucket-name/path)" "${S3_BUCKET}" S3_BUCKET
             ask "S3 region" "${S3_REGION}" S3_REGION
@@ -322,17 +323,19 @@ configure_high_availability() {
     ENABLE_WAL_ARCHIVING="${ENABLE_WAL_ARCHIVING:-no}"
     ENABLE_REPLICATION="${ENABLE_REPLICATION:-no}"
     
+    # Initialize HA variables even if disabled (for save_state)
+    WAL_ARCHIVE_DESTINATION="${WAL_ARCHIVE_DESTINATION:-/var/lib/postgresql/wal_archive}"
+    REPLICATION_SLOTS="${REPLICATION_SLOTS:-2}"
+    
     ask_yn "Enable WAL (Write-Ahead Log) archiving" "${ENABLE_WAL_ARCHIVING}" ENABLE_WAL_ARCHIVING
     
     if [[ "${ENABLE_WAL_ARCHIVING}" == "yes" ]]; then
-        WAL_ARCHIVE_DESTINATION="${WAL_ARCHIVE_DESTINATION:-/var/lib/postgresql/wal_archive}"
         ask "WAL archive destination (local path or s3://)" "${WAL_ARCHIVE_DESTINATION}" WAL_ARCHIVE_DESTINATION
     fi
     
     ask_yn "Configure for replication (streaming replication)" "${ENABLE_REPLICATION}" ENABLE_REPLICATION
     
     if [[ "${ENABLE_REPLICATION}" == "yes" ]]; then
-        REPLICATION_SLOTS="${REPLICATION_SLOTS:-2}"
         ask "Number of replication slots" "${REPLICATION_SLOTS}" REPLICATION_SLOTS
     fi
 }
@@ -342,14 +345,15 @@ configure_connection_pooling() {
     
     ENABLE_PGBOUNCER="${ENABLE_PGBOUNCER:-yes}"
     
+    # Initialize PgBouncer variables even if disabled (for save_state)
+    PGBOUNCER_PORT="${PGBOUNCER_PORT:-6432}"
+    PGBOUNCER_POOL_MODE="${PGBOUNCER_POOL_MODE:-transaction}"
+    PGBOUNCER_MAX_CLIENT_CONN="${PGBOUNCER_MAX_CLIENT_CONN:-1000}"
+    PGBOUNCER_DEFAULT_POOL_SIZE="${PGBOUNCER_DEFAULT_POOL_SIZE:-25}"
+    
     ask_yn "Enable PgBouncer connection pooling" "${ENABLE_PGBOUNCER}" ENABLE_PGBOUNCER
     
     if [[ "${ENABLE_PGBOUNCER}" == "yes" ]]; then
-        PGBOUNCER_PORT="${PGBOUNCER_PORT:-6432}"
-        PGBOUNCER_POOL_MODE="${PGBOUNCER_POOL_MODE:-transaction}"
-        PGBOUNCER_MAX_CLIENT_CONN="${PGBOUNCER_MAX_CLIENT_CONN:-1000}"
-        PGBOUNCER_DEFAULT_POOL_SIZE="${PGBOUNCER_DEFAULT_POOL_SIZE:-25}"
-        
         ask "PgBouncer listen port" "${PGBOUNCER_PORT}" PGBOUNCER_PORT
         ask "Pool mode (session/transaction/statement)" "${PGBOUNCER_POOL_MODE}" PGBOUNCER_POOL_MODE
         ask "Maximum client connections" "${PGBOUNCER_MAX_CLIENT_CONN}" PGBOUNCER_MAX_CLIENT_CONN
