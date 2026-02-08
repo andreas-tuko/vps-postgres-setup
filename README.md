@@ -85,10 +85,10 @@ A **production-grade, interactive, and idempotent** PostgreSQL 17 setup script f
 
 ```bash
 # Via wget
-wget https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17.sh
+wget https://raw.githubusercontent.com/andreas-tuko/vps-postgres-setup/main/setup-postgres17.sh
 
 # Via curl
-curl -O https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17.sh
+curl -O https://raw.githubusercontent.com/andreas-tuko/vps-postgres-setup/main/setup-postgres17.sh
 ```
 
 ### 2. Make Executable
@@ -953,8 +953,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support & Resources
 
 - **Documentation:** [PostgreSQL Official Docs](https://www.postgresql.org/docs/17/)
-- **Issues:** [GitHub Issues](https://github.com/your-repo/vps-postgres-setup/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/your-repo/vps-postgres-setup/discussions)
+- **Issues:** [GitHub Issues](https://github.com/andreas-tuko/vps-postgres-setup/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/andreas-tuko/vps-postgres-setup/discussions)
 - **PostgreSQL Wiki:** [PostgreSQL Wiki](https://wiki.postgresql.org/)
 
 ---
