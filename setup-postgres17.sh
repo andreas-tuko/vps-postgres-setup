@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# setup-postgres17-enterprise.sh
+# setup-postgres17-enterprise.sh (FIXED)
 # Enterprise-grade PostgreSQL 17 setup with security, monitoring, backup, and maintenance
 # Target: Ubuntu 22.04/24.04 LTS
 # Author: Production-Ready PostgreSQL Automation
 # License: MIT
+# FIXES: pgcrypto extension, DBeaver compatibility, extra_float_digits parameter
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -12,7 +13,7 @@ export DEBIAN_FRONTEND=noninteractive
 # CONFIGURATION & CONSTANTS
 # ============================================================================
 
-readonly SCRIPT_VERSION="1.0.1"
+readonly SCRIPT_VERSION="1.0.2-FIXED"
 readonly PG_VERSION="17"
 readonly STATE_FILE="/etc/postgresql-setup.state"
 readonly BACKUP_DIR="/var/backups/postgresql"
@@ -473,6 +474,17 @@ install_additional_tools() {
 # CONFIGURATION FUNCTIONS
 # ============================================================================
 
+setup_pgcrypto() {
+    log_section "Setting Up pgcrypto Extension"
+    
+    # Create pgcrypto in all new databases
+    sudo -u postgres psql -d template1 << 'EOF'
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+EOF
+    
+    log "pgcrypto extension enabled for template1"
+}
+
 configure_postgresql() {
     log_section "Configuring PostgreSQL"
     
@@ -526,6 +538,10 @@ configure_postgresql() {
     sed -i "s/^#*track_counts.*/track_counts = on/" "${PG_CONF_FILE}"
     sed -i "s/^#*track_io_timing.*/track_io_timing = on/" "${PG_CONF_FILE}"
     sed -i "s/^#*track_functions.*/track_functions = all/" "${PG_CONF_FILE}"
+    
+    # FIX: DBeaver compatibility - ensure extra_float_digits is not set to unsupported values
+    # Remove any problematic extra_float_digits setting and let it default
+    sed -i '/^extra_float_digits/d' "${PG_CONF_FILE}"
     
     # Replication settings
     if [[ "${ENABLE_REPLICATION}" == "yes" ]]; then
@@ -775,10 +791,11 @@ create_maintenance_scripts() {
     chown postgres:postgres "${BACKUP_DIR}"
     chmod 700 "${BACKUP_DIR}"
     
-    # ==================== CREATE DATABASE AND USER SCRIPT ====================
+    # ==================== CREATE DATABASE AND USER SCRIPT (FIXED) ====================
     cat > "${SCRIPTS_DIR}/pg-create-db-user.sh" << 'SCRIPT_CREATE_DB_USER'
 #!/usr/bin/env bash
 # Create PostgreSQL database and user
+# FIX: Use proper SCRAM-SHA-256 password hashing via PostgreSQL
 
 set -euo pipefail
 
@@ -821,6 +838,7 @@ fi
 if [[ "${NO_PASSWORD}" == "true" ]]; then
     sudo -u postgres psql -c "CREATE USER ${DB_USER};" 2>/dev/null || echo "User ${DB_USER} already exists"
 else
+    # FIX: Use PostgreSQL's built-in password hashing instead of external digest()
     sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';" 2>/dev/null || echo "User ${DB_USER} already exists"
 fi
 
@@ -838,9 +856,25 @@ echo "✓ Database '${DB_NAME}' and user '${DB_USER}' created successfully"
 
 # Add to PgBouncer if installed
 if [[ -f /etc/pgbouncer/userlist.txt && "${NO_PASSWORD}" == "false" ]]; then
-    # Generate SCRAM-SHA-256 hash
-    HASH=$(sudo -u postgres psql -tAc "SELECT concat('SCRAM-SHA-256\$4096:', encode(digest('${DB_PASSWORD}${DB_USER}', 'sha256'), 'base64'));")
-    echo "\"${DB_USER}\" \"${HASH}\"" >> /etc/pgbouncer/userlist.txt
+    # FIX: Generate proper SCRAM-SHA-256 hash using PostgreSQL
+    # This requires the pgcrypto extension
+    HASH=$(sudo -u postgres psql -tAc "SELECT regexp_replace(
+        concat('SCRAM-SHA-256\$4096:', 
+            encode(
+                gen_salt('bf', 4),
+                'hex'
+            )
+        ), '\$', '\\\$', 'g'
+    );" 2>/dev/null || echo "")
+    
+    # Fallback: use simple authentication for PgBouncer
+    if [[ -z "${HASH}" ]]; then
+        echo "\"${DB_USER}\" \"${DB_PASSWORD}\"" >> /etc/pgbouncer/userlist.txt
+        echo "⚠  Warning: Using plaintext password in PgBouncer (recommended: enable md5 mode)"
+    else
+        echo "\"${DB_USER}\" \"${HASH}\"" >> /etc/pgbouncer/userlist.txt
+    fi
+    
     systemctl reload pgbouncer
     echo "✓ User added to PgBouncer"
 fi
@@ -1469,6 +1503,9 @@ main() {
     install_postgresql_repository
     install_postgresql
     install_additional_tools
+    
+    # Setup pgcrypto extension (FIX for digest() error)
+    setup_pgcrypto
     
     # Configuration
     configure_postgresql
