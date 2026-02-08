@@ -62,27 +62,27 @@ ssh -i ~/.ssh/your-key.pem root@your-vps-ip
 
 **Option A: Direct Download (Recommended)**
 ```bash
-wget https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17-enterprise.sh
+wget https://raw.githubusercontent.com/andreas-tuko/vps-postgres-setup/main/setup-postgres17.sh
 ```
 
 **Option B: Clone Repository**
 ```bash
 apt install -y git
-git clone https://github.com/your-repo/vps-postgres-setup.git
+git clone https://github.com/andreas-tuko/vps-postgres-setup.git
 cd vps-postgres-setup
 ```
 
 **Option C: Upload via SCP**
 ```bash
 # From your local machine
-scp setup-postgres17-enterprise.sh root@your-vps-ip:/root/
+scp setup-postgres17.sh root@your-vps-ip:/root/
 ```
 
 ### Step 3: Make Executable and Run
 
 ```bash
-chmod +x setup-postgres17-enterprise.sh
-sudo ./setup-postgres17-enterprise.sh
+chmod +x setup-postgres17.sh
+sudo ./setup-postgres17.sh
 ```
 
 ### Step 4: Answer Interactive Prompts
@@ -309,9 +309,9 @@ write_files:
 
 runcmd:
   # Download and run setup script
-  - wget -O /root/setup-postgres17-enterprise.sh https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17-enterprise.sh
-  - chmod +x /root/setup-postgres17-enterprise.sh
-  - /root/setup-postgres17-enterprise.sh 2>&1 | tee /var/log/cloud-init-postgres-setup.log
+  - wget -O /root/setup-postgres17.sh https://raw.githubusercontent.com/andreas-tuko/vps-postgres-setup/main/setup-postgres17.sh
+  - chmod +x /root/setup-postgres17.sh
+  - /root/setup-postgres17.sh 2>&1 | tee /var/log/cloud-init-postgres-setup.log
   
   # Create initial database and user
   - sleep 10
@@ -363,7 +363,7 @@ write_files:
       LOG_DISCONNECTIONS="on"
 
 runcmd:
-  - wget -O /root/setup.sh https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17-enterprise.sh
+  - wget -O /root/setup.sh https://raw.githubusercontent.com/andreas-tuko/vps-postgres-setup/main/setup-postgres17.sh
   - chmod +x /root/setup.sh
   - /root/setup.sh
 ```
@@ -512,7 +512,7 @@ write_files:
       ENABLE_PGBOUNCER="yes"
 
 runcmd:
-  - wget -O /root/setup.sh https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17-enterprise.sh
+  - wget -O /root/setup.sh https://raw.githubusercontent.com/andreas-tuko/vps-postgres-setup/main/setup-postgres17.sh
   - chmod +x /root/setup.sh
   - /root/setup.sh
 ```
@@ -593,12 +593,12 @@ terraform output connection_string
     
     - name: Download setup script
       get_url:
-        url: https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17-enterprise.sh
-        dest: /root/setup-postgres17-enterprise.sh
+        url: https://raw.githubusercontent.com/andreas-tuko/vps-postgres-setup/main/setup-postgres17.sh
+        dest: /root/setup-postgres17.sh
         mode: '0755'
     
     - name: Run setup script
-      command: /root/setup-postgres17-enterprise.sh
+      command: /root/setup-postgres17.sh
       register: setup_output
       changed_when: "'Setup completed' in setup_output.stdout"
     
@@ -664,7 +664,7 @@ ${STATE_FILE_CONTENT}
 EOF
   
   # Download and run setup
-  wget -O /root/setup.sh https://raw.githubusercontent.com/your-repo/vps-postgres-setup/main/setup-postgres17-enterprise.sh
+  wget -O /root/setup.sh https://raw.githubusercontent.com/andreas-tuko/vps-postgres-setup/main/setup-postgres17.sh
   chmod +x /root/setup.sh
   /root/setup.sh
   
