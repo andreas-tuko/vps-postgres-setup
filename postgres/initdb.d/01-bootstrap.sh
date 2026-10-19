@@ -24,8 +24,6 @@ GRANT EXECUTE ON FUNCTION pgbouncer.get_auth(text) TO pgbouncer_auth;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 SQL
 
-# Make every future database inherit pg_stat_statements.
-psql -X -v ON_ERROR_STOP=1 -d template1 -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;'
 
 if [[ -n "${APP_DB_NAME:-}" && -n "${APP_DB_USER:-}" && -n "${APP_DB_PASSWORD:-}" ]]; then
     APP_PASSWORD="${APP_DB_PASSWORD}" create-app-db "${APP_DB_NAME}" "${APP_DB_USER}"
