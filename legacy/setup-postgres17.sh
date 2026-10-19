@@ -532,7 +532,11 @@ GRANT USAGE ON SCHEMA pgbouncer TO pgbouncer_auth;
 GRANT EXECUTE ON FUNCTION pgbouncer.get_auth(text) TO pgbouncer_auth;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 SQL
-    psql_pg -d template1 -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;'
+    # Do NOT install pg_stat_statements into template1.
+    # If installed in template1, all newly created databases inherit pg_stat_statements_reset()
+    # owned by postgres in public schema. When non-superuser app roles run
+    # 'GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA "public"', PostgreSQL fails with
+    # "ERROR: permission denied for function pg_stat_statements_reset".
     unset REPL_PW AUTH_PW MON_PW
     if [[ -n "${APP_DB_NAME}" && -n "${APP_DB_USER}" && -n "${APP_DB_PASSWORD}" ]]; then
         APP_PASSWORD="${APP_DB_PASSWORD}" "${BIN_DIR}/pg-create-db" "${APP_DB_NAME}" "${APP_DB_USER}"
@@ -859,9 +863,11 @@ psql -X -v ON_ERROR_STOP=1 -p "${port}" -d postgres -v db="${db}" -v usr="${role
 \getenv pw APP_PASSWORD
 SELECT format('CREATE ROLE %I LOGIN', :'usr') WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'usr') \gexec
 SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'usr', :'pw') \gexec
+SELECT format('ALTER ROLE %I WITH CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS', :'usr') \gexec
+SELECT format('GRANT CONNECT ON DATABASE postgres TO %I', :'usr') \gexec
 SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'usr') WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db') \gexec
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'db') \gexec
-SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'db', :'usr') \gexec
+SELECT format('GRANT ALL PRIVILEGES ON DATABASE %I TO %I', :'db', :'usr') \gexec
 SQL
 echo "ok: database '${db}' owned by '${role}'"
 EOF
