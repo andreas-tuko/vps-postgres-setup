@@ -77,6 +77,8 @@ chmod 0644 "${CERT_DIR}/server.crt"; chmod 0600 "${CERT_DIR}/server.key"
     echo "host     all          replicator   ::/0               reject"
     echo "hostnossl all         all          0.0.0.0/0          reject"
     echo "hostnossl all         all          ::/0               reject"
+    echo "hostssl  all          all          127.0.0.1/32       scram-sha-256"
+    echo "hostssl  all          all          ::1/128            scram-sha-256"
     IFS=',' read -ra cidrs <<< "${PG_ALLOWED_CIDRS:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}"
     for c in "${cidrs[@]}"; do
         c="${c//[[:space:]]/}"; [[ -n "${c}" ]] || continue
