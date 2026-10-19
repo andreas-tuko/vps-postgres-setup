@@ -1,0 +1,26 @@
+# Example config for setup-postgres17.sh  (chmod 600 this file; it may hold secrets)
+# Blank/omitted secrets are generated and stored in /etc/pg-setup/credentials.env
+
+ROLE=primary
+
+# Who may reach PgBouncer (and replicas -> Postgres). Empty = local only.
+ALLOWED_CIDRS=203.0.113.10/32
+PGBOUNCER_LISTEN=*            # '*' = reachable from ALLOWED_CIDRS (UFW enforces the allow-list)
+PG_LISTEN_ADDRESSES=localhost # set to an IP/'*' only when a replica on another host connects
+
+ENABLE_FIREWALL=yes
+ENABLE_FAIL2BAN=yes
+
+# First application database (password generated if blank)
+APP_DB_NAME=myapp
+APP_DB_USER=myapp_user
+
+# Off-site backups (strongly recommended)
+BACKUP_S3_BUCKET=my-pg-backups
+BACKUP_S3_ENDPOINT=s3.eu-central-1.amazonaws.com
+BACKUP_S3_REGION=eu-central-1
+BACKUP_S3_KEY=AKIA...
+BACKUP_S3_KEY_SECRET=...
+ALERT_WEBHOOK_URL=
+
+ENABLE_EXPORTER=no

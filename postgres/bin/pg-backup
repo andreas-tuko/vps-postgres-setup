@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Usage: pg-backup [full|diff|incr]   (default: diff)
+# Runs the backup against every configured repository (repo1 = local volume, repo2 = S3 if configured).
+set -Eeuo pipefail
+[[ "${EUID}" -ne 0 ]] || exec gosu postgres "$0" "$@"
+
+type="${1:-diff}"
+case "${type}" in full|diff|incr) ;; *) echo "usage: pg-backup [full|diff|incr]" >&2; exit 2 ;; esac
+
+rc=0
+mapfile -t repos < <(grep -oE '^repo[0-9]+-path' /etc/pgbackrest/pgbackrest.conf | grep -oE '[0-9]+')
+for repo in "${repos[@]}"; do
+    echo "== ${type} backup -> repo${repo} =="
+    pgbackrest --stanza=main --repo="${repo}" --type="${type}" backup || rc=1
+done
+exit "${rc}"

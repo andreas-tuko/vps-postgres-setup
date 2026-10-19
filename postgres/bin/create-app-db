@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Usage: create-app-db <database> <role>      (password from $APP_PASSWORD or interactive prompt)
+#   docker compose exec postgres-primary create-app-db myapp myapp_user
+set -Eeuo pipefail
+[[ "${EUID}" -ne 0 ]] || exec gosu postgres "$0" "$@"
+
+db="${1:?usage: create-app-db <database> <role>}"
+role="${2:?usage: create-app-db <database> <role>}"
+re='^[a-z_][a-z0-9_]{0,62}$'
+[[ "${db}" =~ ${re} && "${role}" =~ ${re} ]] || { echo "names must match ${re}" >&2; exit 1; }
+
+if [[ -z "${APP_PASSWORD:-}" ]]; then
+    read -rsp "Password for ${role}: " APP_PASSWORD; echo
+    read -rsp "Confirm: " confirm; echo
+    [[ "${APP_PASSWORD}" == "${confirm}" ]] || { echo "passwords differ" >&2; exit 1; }
+fi
+[[ -n "${APP_PASSWORD}" ]] || { echo "empty password" >&2; exit 1; }
+
+psql -X -v ON_ERROR_STOP=1 -d postgres -v db="${db}" -v usr="${role}" -v pw="${APP_PASSWORD}" <<'SQL'
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'usr', :'pw')
+ WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'usr') \gexec
+SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'usr')
+ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db') \gexec
+SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'db') \gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'db', :'usr') \gexec
+SQL
+echo "ok: database '${db}' owned by '${role}' (connect through pgbouncer:6432)"

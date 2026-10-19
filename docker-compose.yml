@@ -1,0 +1,167 @@
+# PostgreSQL 17 + PgBouncer + pgBackRest (WAL archiving / PITR) + optional streaming replica & metrics.
+# Deploy as-is on Dokploy ("Compose" service from GitHub) or Coolify ("Docker Compose" build pack).
+# All configuration comes from environment variables — see .env.example.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-pg-env: &pg-env
+  TZ: UTC
+  TLS_CERT_B64: ${TLS_CERT_B64:-}
+  TLS_KEY_B64: ${TLS_KEY_B64:-}
+  PG_MAX_CONNECTIONS: ${PG_MAX_CONNECTIONS:-200}
+  PG_SHARED_BUFFERS: ${PG_SHARED_BUFFERS:-1GB}
+  PG_EFFECTIVE_CACHE_SIZE: ${PG_EFFECTIVE_CACHE_SIZE:-3GB}
+  PG_WORK_MEM: ${PG_WORK_MEM:-16MB}
+  PG_MAINTENANCE_WORK_MEM: ${PG_MAINTENANCE_WORK_MEM:-256MB}
+  PG_MAX_WAL_SIZE: ${PG_MAX_WAL_SIZE:-4GB}
+  PG_MAX_SLOT_WAL_KEEP_SIZE: ${PG_MAX_SLOT_WAL_KEEP_SIZE:-20GB}
+  PG_LOG_MIN_DURATION_MS: ${PG_LOG_MIN_DURATION_MS:-1000}
+  PG_ALLOWED_CIDRS: ${PG_ALLOWED_CIDRS:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD}
+  BACKUP_ENABLED: ${BACKUP_ENABLED:-yes}
+  BACKUP_CIPHER_PASS: ${BACKUP_CIPHER_PASS:?set BACKUP_CIPHER_PASS}
+  BACKUP_RETENTION_FULL: ${BACKUP_RETENTION_FULL:-4}
+  BACKUP_RETENTION_DIFF: ${BACKUP_RETENTION_DIFF:-14}
+  BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+  BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+  BACKUP_S3_REGION: ${BACKUP_S3_REGION:-}
+  BACKUP_S3_KEY: ${BACKUP_S3_KEY:-}
+  BACKUP_S3_KEY_SECRET: ${BACKUP_S3_KEY_SECRET:-}
+  BACKUP_S3_URI_STYLE: ${BACKUP_S3_URI_STYLE:-host}
+  BACKUP_S3_PATH: ${BACKUP_S3_PATH:-/pgbackrest}
+
+services:
+  postgres-primary:
+    build:
+      context: ./postgres
+    image: ${POSTGRES_IMAGE:-andreastuko/vps-postgres:17}
+    restart: unless-stopped
+    init: true
+    shm_size: 512mb
+    stop_grace_period: 2m
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      <<: *pg-env
+      PG_ROLE: primary
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGBOUNCER_AUTH_PASSWORD: ${PGBOUNCER_AUTH_PASSWORD:?set PGBOUNCER_AUTH_PASSWORD}
+      MONITOR_PASSWORD: ${MONITOR_PASSWORD:?set MONITOR_PASSWORD}
+      BACKUP_FULL_CRON: ${BACKUP_FULL_CRON:-0 2 * * 0}
+      BACKUP_DIFF_CRON: ${BACKUP_DIFF_CRON:-0 2 * * 1-6}
+      APP_DB_NAME: ${APP_DB_NAME:-}
+      APP_DB_USER: ${APP_DB_USER:-}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - pgbackrest_repo:/var/lib/pgbackrest
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    logging: *default-logging
+
+  pgbouncer:
+    build:
+      context: ./pgbouncer
+    image: ${PGBOUNCER_IMAGE:-andreastuko/vps-pgbouncer:1}
+    restart: unless-stopped
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TLS_CERT_B64: ${TLS_CERT_B64:-}
+      TLS_KEY_B64: ${TLS_KEY_B64:-}
+      PG_HOST: postgres-primary
+      PGBOUNCER_AUTH_PASSWORD: ${PGBOUNCER_AUTH_PASSWORD:?set PGBOUNCER_AUTH_PASSWORD}
+      PGBOUNCER_ADMIN_PASSWORD: ${PGBOUNCER_ADMIN_PASSWORD:?set PGBOUNCER_ADMIN_PASSWORD}
+      PGBOUNCER_POOL_MODE: ${PGBOUNCER_POOL_MODE:-transaction}
+      PGBOUNCER_MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-1000}
+      PGBOUNCER_DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      PGBOUNCER_MAX_DB_CONNECTIONS: ${PGBOUNCER_MAX_DB_CONNECTIONS:-100}
+      PGBOUNCER_MAX_PREPARED_STATEMENTS: ${PGBOUNCER_MAX_PREPARED_STATEMENTS:-100}
+    # Published on loopback only by default. Set PGBOUNCER_BIND=0.0.0.0 to expose it publicly
+    # (TLS + SCRAM are enforced) — and remember Docker bypasses UFW, so firewall at the provider level.
+    ports:
+      - "${PGBOUNCER_BIND:-127.0.0.1}:${PGBOUNCER_PORT:-6432}:6432"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 6432"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+
+  # --- optional: warm standby / read replica (COMPOSE_PROFILES=replica) ----------------------
+  postgres-replica:
+    profiles: ["replica"]
+    build:
+      context: ./postgres
+    image: ${POSTGRES_IMAGE:-andreastuko/vps-postgres:17}
+    restart: unless-stopped
+    init: true
+    shm_size: 512mb
+    stop_grace_period: 2m
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    environment:
+      <<: *pg-env
+      PG_ROLE: replica
+      PRIMARY_HOST: ${PRIMARY_HOST:-postgres-primary}
+      REPLICA_SLOT: ${REPLICA_SLOT:-replica1}
+    volumes:
+      - pgdata_replica:/var/lib/postgresql/data
+      - pgbackrest_repo:/var/lib/pgbackrest
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+    logging: *default-logging
+
+  # --- optional: Prometheus metrics (COMPOSE_PROFILES=monitoring) ----------------------------
+  postgres-exporter:
+    profiles: ["monitoring"]
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATA_SOURCE_URI: postgres-primary:5432/postgres?sslmode=require
+      DATA_SOURCE_USER: monitor
+      DATA_SOURCE_PASS: ${MONITOR_PASSWORD:?set MONITOR_PASSWORD}
+    expose:
+      - "9187"
+    logging: *default-logging
+
+# To let apps in OTHER Dokploy/Coolify projects reach pgbouncer by name, attach it to the shared
+# network (Dokploy: dokploy-network; Coolify: enable "Connect to Predefined Network"). Example:
+#   services:
+#     pgbouncer:
+#       networks: [default, shared]
+#   networks:
+#     shared: { external: true, name: dokploy-network }
+
+volumes:
+  pgdata:
+  pgdata_replica:
+  pgbackrest_repo:

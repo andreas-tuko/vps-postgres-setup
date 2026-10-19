@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Restore from pgBackRest into the (stopped) data directory. Extra args go to `pgbackrest restore`.
+#   latest:   docker compose run --rm --no-deps --entrypoint pg-restore postgres-primary
+#   PITR:     ... pg-restore --type=time "--target=2026-10-19 10:15:00+00" --target-action=promote
+#   from S3:  ... pg-restore --repo=2
+set -Eeuo pipefail
+PGDATA="${PGDATA:-/var/lib/postgresql/data}"
+
+if [[ -f "${PGDATA}/postmaster.pid" ]]; then
+    echo "postmaster.pid exists in ${PGDATA}: stop the postgres service first (docker compose stop postgres-primary)." >&2
+    exit 1
+fi
+render-pgbackrest-conf
+install -d -m 0700 -o postgres -g postgres "${PGDATA}"
+exec gosu postgres pgbackrest --stanza=main --delta "$@" restore

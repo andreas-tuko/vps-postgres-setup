@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Renders /etc/pgbackrest/pgbackrest.conf from environment variables.
+set -Eeuo pipefail
+
+: "${BACKUP_CIPHER_PASS:?BACKUP_CIPHER_PASS is required}"
+for v in BACKUP_CIPHER_PASS BACKUP_S3_KEY BACKUP_S3_KEY_SECRET; do
+    [[ "${!v:-}" != *$'\n'* ]] || { echo "${v} must not contain newlines" >&2; exit 1; }
+done
+
+CONF=/etc/pgbackrest/pgbackrest.conf
+umask 077
+{
+    cat <<CFG
+[global]
+repo1-path=/var/lib/pgbackrest
+repo1-retention-full=${BACKUP_RETENTION_FULL:-4}
+repo1-retention-diff=${BACKUP_RETENTION_DIFF:-14}
+repo1-cipher-type=aes-256-cbc
+repo1-cipher-pass=${BACKUP_CIPHER_PASS}
+compress-type=zst
+compress-level=3
+process-max=${BACKUP_PROCESS_MAX:-2}
+start-fast=y
+delta=y
+archive-async=y
+spool-path=/var/spool/pgbackrest
+archive-push-queue-max=${BACKUP_ARCHIVE_QUEUE_MAX:-10GiB}
+log-path=/var/log/pgbackrest
+log-level-console=info
+log-level-file=info
+CFG
+    if [[ -n "${BACKUP_S3_BUCKET:-}" ]]; then
+        : "${BACKUP_S3_ENDPOINT:?BACKUP_S3_ENDPOINT is required with BACKUP_S3_BUCKET}"
+        : "${BACKUP_S3_REGION:?BACKUP_S3_REGION is required with BACKUP_S3_BUCKET}"
+        : "${BACKUP_S3_KEY:?BACKUP_S3_KEY is required with BACKUP_S3_BUCKET}"
+        : "${BACKUP_S3_KEY_SECRET:?BACKUP_S3_KEY_SECRET is required with BACKUP_S3_BUCKET}"
+        cat <<CFG
+repo2-type=s3
+repo2-path=${BACKUP_S3_PATH:-/pgbackrest}
+repo2-s3-bucket=${BACKUP_S3_BUCKET}
+repo2-s3-endpoint=${BACKUP_S3_ENDPOINT}
+repo2-s3-region=${BACKUP_S3_REGION}
+repo2-s3-key=${BACKUP_S3_KEY}
+repo2-s3-key-secret=${BACKUP_S3_KEY_SECRET}
+repo2-s3-uri-style=${BACKUP_S3_URI_STYLE:-host}
+repo2-cipher-type=aes-256-cbc
+repo2-cipher-pass=${BACKUP_CIPHER_PASS}
+repo2-retention-full=${BACKUP_RETENTION_FULL:-4}
+repo2-retention-diff=${BACKUP_RETENTION_DIFF:-14}
+CFG
+    fi
+    cat <<CFG
+
+[main]
+pg1-path=${PGDATA:-/var/lib/postgresql/data}
+pg1-socket-path=/var/run/postgresql
+pg1-user=postgres
+CFG
+} > "${CONF}"
+
+chown postgres:postgres "${CONF}"
+chmod 0600 "${CONF}"

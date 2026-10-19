@@ -1,0 +1,10 @@
+.env
+overrides.env
+*.env.local
+*.log
+*.crt
+*.key
+*.pem
+.DS_Store
+.idea/
+.vscode/

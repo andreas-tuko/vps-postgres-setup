@@ -1,0 +1,42 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x postgres/entrypoint.sh postgres/bin/* postgres/initdb.d/*.sh pgbouncer/entrypoint.sh scripts/*.sh
+      - name: compose config
+        run: |
+          export POSTGRES_PASSWORD=x REPLICATION_PASSWORD=x PGBOUNCER_AUTH_PASSWORD=x \
+                 PGBOUNCER_ADMIN_PASSWORD=x MONITOR_PASSWORD=x BACKUP_CIPHER_PASS=x
+          docker compose --profile replica --profile monitoring config -q
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: generate test env
+        run: |
+          cp .env.example .env
+          {
+            for v in POSTGRES_PASSWORD REPLICATION_PASSWORD PGBOUNCER_AUTH_PASSWORD PGBOUNCER_ADMIN_PASSWORD MONITOR_PASSWORD BACKUP_CIPHER_PASS APP_DB_PASSWORD; do
+              echo "${v}=$(openssl rand -hex 16)"
+            done
+            echo "APP_DB_NAME=smoke"; echo "APP_DB_USER=smoke_user"
+            echo "COMPOSE_PROFILES=replica,monitoring"
+            echo "PG_SHARED_BUFFERS=128MB"; echo "PG_EFFECTIVE_CACHE_SIZE=384MB"
+          } > overrides.env
+          # later definitions win when sourced
+          cat overrides.env >> .env
+      - name: run smoke test
+        run: |
+          ./scripts/smoke-test.sh
+      - name: logs on failure
+        if: failure()
+        run: docker compose logs --no-color | tail -300

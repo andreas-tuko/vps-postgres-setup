@@ -1,43 +1,69 @@
 # Contributing to VPS Postgres Setup
 
-First off, thank you for considering contributing to this project! It's people like you that make the open-source community such an amazing place to learn, inspire, and create.
+Thank you for contributing to this project!
 
-## 📌 Core Philosophy: Idempotency
-The most important rule for this project is **Idempotency**.
-- This script is designed to be run multiple times on the same server without breaking anything.
-- **Rule:** If a user runs the script a second time, it should detect existing configurations and skip/update them safely, rather than overwriting them blindly or failing.
+## 📌 Architecture & Design Principles
 
-## 🐛 Reporting Bugs
-Bugs are tracked as GitHub issues. When filing an issue, please include:
-- **OS Version:** (e.g., Ubuntu 24.04 LTS)
-- **Script Output:** Copy-paste the relevant logs or error messages.
-- **State File:** If safe, share the contents of `/etc/pg-setup.conf` (redact sensitive keys).
+1. **Declarative & Reproducible:**
+   - Configuration is strictly environment-variable driven (no hidden state files).
+   - Any tunable should be configurable via `.env` with sane production defaults.
+2. **Containerized & Stateless Host:**
+   - The primary stack runs via Docker Compose and prebuilt Docker Hub images.
+   - Host systems should not require package installations other than Docker and Docker Compose.
+3. **Safety & Zero Data Loss:**
+   - WAL archiving must remain functional at all times.
+   - Passwords must never be exposed in unescaped SQL strings or process tables.
+   - Containers run with least privileges (`read_only` filesystems and `cap_drop: ALL` where possible).
 
-## 💡 Suggesting Enhancements
-1. **Check existing issues** to see if your idea has already been discussed.
-2. **Open a new issue** describing the improvement.
-3. **Context:** Explain *why* this change is beneficial (e.g., "Improves security," "Reduces memory usage").
+---
 
-## 🛠 Pull Requests
-1. **Fork the repo** and create your branch from `main`.
-2. **Test your changes:**
-   - Run the script on a **fresh** Ubuntu 24.04 VM or LXC container.
-   - Run the script **twice** to verify idempotency.
-   - Verify that PostgreSQL and PgBouncer services are active (`systemctl status postgresql pgbouncer`).
-3. **Code Style:**
-   - Use `bash` best practices.
-   - Use `log()` for outputting messages.
-   - Ensure variables are quoted to prevent word splitting.
-4. **Documentation:** If you add a new feature, update `README.md` and the relevant prompts in the script.
+## 🛠 Development & Testing Workflow
 
-## 🧪 Testing Locally
-The easiest way to test changes is using a local VM (VirtualBox) or a cloud instance (DigitalOcean/AWS/Hetzner) that you can destroy afterwards.
+### 1. Requirements
 
-**Sanity Check List:**
-- [ ] Does `setup-postgres17.sh` run without errors on a fresh install?
-- [ ] Does it run without errors on a *second* pass?
-- [ ] Can you connect to port `5432` (Postgres) and `6432` (PgBouncer)?
-- [ ] Do the backup/restore scripts (`/usr/local/bin/pg_*`) work?
+- Docker & Docker Compose
+- `bash`
+
+### 2. Linting & Validation
+
+Before submitting a PR, make sure the Compose syntax is valid:
+
+```bash
+POSTGRES_PASSWORD=x REPLICATION_PASSWORD=x PGBOUNCER_AUTH_PASSWORD=x \
+PGBOUNCER_ADMIN_PASSWORD=x MONITOR_PASSWORD=x BACKUP_CIPHER_PASS=x \
+docker compose --profile replica --profile monitoring config -q
+```
+
+Validate all bash scripts syntax:
+
+```bash
+bash -n postgres/entrypoint.sh postgres/bin/* postgres/initdb.d/*.sh pgbouncer/entrypoint.sh scripts/*.sh
+```
+
+### 3. Running the Smoke Test Suite
+
+The repository includes an end-to-end integration test in `scripts/smoke-test.sh`:
+
+```bash
+# Generates a temporary test environment and verifies:
+# 1. Primary container boot
+# 2. PgBouncer auth_query SCRAM authentication
+# 3. WAL archiving and initial pgBackRest backup
+# 4. Streaming replica synchronization
+./scripts/smoke-test.sh
+```
+
+---
+
+## 📦 Docker Images & Releases
+
+Multi-architecture images (`linux/amd64`, `linux/arm64`) are built and published automatically by GitHub Actions in `.github/workflows/publish.yml` upon push to `main` or release tag:
+
+- `andreastuko/vps-postgres:17`
+- `andreastuko/vps-pgbouncer:1`
+
+---
 
 ## 📜 License
+
 By contributing, you agree that your contributions will be licensed under the MIT License.

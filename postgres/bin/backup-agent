@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Runs next to the primary: creates the stanza, takes the first full backup, then schedules the rest.
+set -Eeuo pipefail
+
+log() { printf '%s [backup-agent] %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
+
+# The temporary server used during first-time init has no TCP listener, so waiting on TCP
+# guarantees we only continue once the real server is up.
+until pg_isready -q -h 127.0.0.1 -p 5432; do sleep 3; done
+
+pgbackrest --stanza=main stanza-create || log "stanza-create failed (will retry on next start)"
+pgbackrest --stanza=main check        || log "pgbackrest check failed — inspect archive_command / repo access"
+
+if ! pgbackrest --stanza=main info --output=json | grep -q '"backup":\[{'; then
+    log "no backups found — taking initial full backup"
+    pg-backup full || log "initial backup failed"
+fi
+
+CRONTAB=/tmp/backup.crontab
+cat > "${CRONTAB}" <<CRON
+${BACKUP_FULL_CRON:-0 2 * * 0} /usr/local/bin/pg-backup full
+${BACKUP_DIFF_CRON:-0 2 * * 1-6} /usr/local/bin/pg-backup diff
+CRON
+log "scheduler started (full: ${BACKUP_FULL_CRON:-0 2 * * 0} | diff: ${BACKUP_DIFF_CRON:-0 2 * * 1-6})"
+exec supercronic "${CRONTAB}"
