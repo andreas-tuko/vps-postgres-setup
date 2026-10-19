@@ -37,12 +37,18 @@ dc exec -T postgres-primary gosu postgres psql -Atc "select pg_switch_wal()" >/d
 sleep 10
 dc exec -T postgres-primary gosu postgres psql -Atc "select failed_count from pg_stat_archiver" | grep -qx 0
 dc exec -T postgres-primary pg-backup full
-dc exec -T postgres-primary pgbackrest --stanza=main info | grep -q "full backup"
+dc exec -T postgres-primary gosu postgres pgbackrest --stanza=main info | grep -q "full backup"
 
 if [[ ",${COMPOSE_PROFILES}," == *",replica,"* ]]; then
     echo "== replica =="
     wait_healthy postgres-replica
     dc exec -T postgres-replica gosu postgres psql -Atc "select pg_is_in_recovery()" | grep -qx t
+    for _ in $(seq 1 30); do
+        if [[ "$(dc exec -T postgres-primary gosu postgres psql -Atc "select count(*) from pg_stat_replication where state='streaming'")" == "1" ]]; then
+            break
+        fi
+        sleep 1
+    done
     dc exec -T postgres-primary gosu postgres psql -Atc "select count(*) from pg_stat_replication where state='streaming'" | grep -qx 1
 fi
 echo "SMOKE TEST PASSED"

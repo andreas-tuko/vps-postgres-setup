@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Wrapper to ensure pgBackRest commands drop root privileges to postgres user.
+set -Eeuo pipefail
+PGBACKREST_BIN=/usr/bin/pgbackrest
+
+if [[ "${EUID}" -eq 0 && "${1:-}" != "restore" ]]; then
+    exec gosu postgres "${PGBACKREST_BIN}" "$@"
+fi
+
+exec "${PGBACKREST_BIN}" "$@"
