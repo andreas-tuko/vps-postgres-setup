@@ -17,8 +17,9 @@ fi
 [[ -n "${APP_PASSWORD}" ]] || { echo "empty password" >&2; exit 1; }
 
 psql -X -v ON_ERROR_STOP=1 -d postgres -v db="${db}" -v usr="${role}" -v pw="${APP_PASSWORD}" <<'SQL'
-SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'usr', :'pw')
+SELECT format('CREATE ROLE %I LOGIN CREATEDB PASSWORD %L', :'usr', :'pw')
  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'usr') \gexec
+SELECT format('ALTER ROLE %I CREATEDB', :'usr') \gexec
 SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'usr')
  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db') \gexec
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'db') \gexec
