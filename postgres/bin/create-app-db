@@ -17,12 +17,19 @@ fi
 [[ -n "${APP_PASSWORD}" ]] || { echo "empty password" >&2; exit 1; }
 
 psql -X -v ON_ERROR_STOP=1 -d postgres -v db="${db}" -v usr="${role}" -v pw="${APP_PASSWORD}" <<'SQL'
-SELECT format('CREATE ROLE %I LOGIN CREATEDB PASSWORD %L', :'usr', :'pw')
+SELECT format('CREATE ROLE %I WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', :'usr', :'pw')
  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'usr') \gexec
-SELECT format('ALTER ROLE %I CREATEDB', :'usr') \gexec
+SELECT format('ALTER ROLE %I WITH NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS', :'usr') \gexec
 SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'usr')
  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db') \gexec
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'db') \gexec
-SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'db', :'usr') \gexec
+SELECT format('GRANT CONNECT, TEMPORARY ON DATABASE %I TO %I', :'db', :'usr') \gexec
+SELECT format('REVOKE CONNECT ON DATABASE postgres FROM %I', :'usr') \gexec
 SQL
-echo "ok: database '${db}' owned by '${role}' (connect through pgbouncer:6432)"
+
+if [[ "${3:-}" == "--createdb" ]]; then
+    psql -X -v ON_ERROR_STOP=1 -d postgres -c "ALTER ROLE \"${role}\" CREATEDB;"
+    echo "ok: database '${db}' owned by '${role}' (with CREATEDB privilege)"
+else
+    echo "ok: database '${db}' owned by '${role}' (least-privilege mode, connect through pgbouncer:6432)"
+fi
