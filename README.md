@@ -99,14 +99,17 @@ All administrative commands are executed inside the primary container using help
 ### 1. Create & Manage Application Databases
 
 #### Via CLI Helper
+
 Create a dedicated database, isolated role, and restricted permissions with one command:
 
 ```bash
 docker compose exec postgres-primary create-app-db <database_name> <user_role>
 ```
+
 *(Prompts securely for password if `APP_PASSWORD` environment variable is not passed).*
 
 #### Via GUI Tools & Dokploy / dbx / pgAdmin
+
 The default application user (`APP_DB_USER`, e.g. `default_user`) is configured with `CREATEDB` privileges and access to connect to `postgres`. This allows you to manage multiple tenant databases through visual interfaces (Dokploy Database UI, dbx, pgAdmin, TablePlus, DBeaver) without needing the root `postgres` superuser:
 
 * **Connection String:** `postgresql://<APP_DB_USER>:<APP_DB_PASSWORD>@<HOST>:6432/postgres` (or your specific database)
@@ -218,9 +221,11 @@ To enable the PostgreSQL Prometheus exporter:
 ## 🔍 Troubleshooting & Common Gotchas
 
 ### 1. `ERROR: permission denied for function pg_stat_statements_reset`
+
 * **Cause:** When creating a new database in Dokploy or a database GUI as a non-superuser, PostgreSQL copies `template1`. If `pg_stat_statements` was installed in `template1`, superuser-owned functions reside in `public`. Running `GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA "public"` fails because non-superusers cannot grant permissions on functions they do not own.
 * **Solution:** `pg_stat_statements` is preloaded cluster-wide via `shared_preload_libraries` in `postgresql.conf` and only created in the maintenance `postgres` DB. It is deliberately omitted from `template1`.
 * **Fix for existing clusters:** If your volume was initialized prior to this change, run:
+
   ```bash
   docker compose exec postgres-primary psql -U postgres -c "
     \c template1
@@ -229,11 +234,13 @@ To enable the PostgreSQL Prometheus exporter:
   ```
 
 ### 2. S3 / Cloudflare R2 Remote Backups (`ERROR: [028]` or Endpoint Issues)
+
 * **Cloudflare R2 Endpoints:** Do NOT include `https://` in `BACKUP_S3_ENDPOINT`. pgBackRest automatically negotiates TLS. Example: `<account_id>.r2.cloudflarestorage.com`.
 * **Path-Style Addressing:** Cloudflare R2 and MinIO require `BACKUP_S3_URI_STYLE=path`.
 * **Error `[028]`: `archive-push command ... manifest ... does not match current cluster`:** Occurs if you point a brand new database volume to an existing S3 bucket prefix that contains files from an old or recreated cluster. Solution: Set a clean path in `.env` (e.g. `BACKUP_S3_PATH=/pgbackrest-v2`) or empty the bucket prefix before first initialization.
 
 ### 3. Docker Healthchecks and Peer Authentication
+
 * Healthchecks are performed locally inside the container via `pg_isready -h /var/run/postgresql -p 5432 -U postgres`.
 * The local UNIX domain socket in `pg_hba.conf` uses `trust` authentication to allow Docker healthchecks (executed as `root`) to verify server readiness without throwing `Peer authentication failed`. TCP connections continue to be protected by SCRAM-SHA-256 and SSL rules.
 

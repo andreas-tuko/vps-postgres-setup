@@ -173,6 +173,7 @@ The backup agent will automatically verify the remote bucket, replicate WAL segm
 
 > [!TIP]
 > **Cloudflare R2 Specifics:**
+>
 > * `BACKUP_S3_ENDPOINT`: Use `<account_id>.r2.cloudflarestorage.com` (do **NOT** include `https://` prefix).
 > * `BACKUP_S3_URI_STYLE`: Must be set to `path`.
 > * `BACKUP_S3_REGION`: Use `auto` or `us-east-1`.
@@ -247,11 +248,13 @@ docker compose exec postgres-primary pg-backup full
 ## Troubleshooting & Common Gotchas
 
 ### 1. `ERROR: permission denied for function pg_stat_statements_reset`
+
 * **Symptom:** Creating a database in Dokploy or pgAdmin results in:
   `ERROR: permission denied for function pg_stat_statements_reset`
 * **Root Cause:** PostgreSQL creates new databases by copying `template1`. If `pg_stat_statements` is installed in `template1`, its functions are owned by `postgres` in the `public` schema. When Dokploy runs `GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA "public" TO "default_user"`, PostgreSQL throws an error because non-superusers cannot grant permissions on functions owned by other roles.
 * **Resolution in this repo:** `pg_stat_statements` is loaded at the engine level in `postgresql.conf` (`shared_preload_libraries`) and only enabled in the maintenance `postgres` database. It is removed from `template1`.
 * **Fix on active clusters:**
+
   ```bash
   docker compose exec postgres-primary psql -U postgres -c "
     \c template1
@@ -260,11 +263,13 @@ docker compose exec postgres-primary pg-backup full
   ```
 
 ### 2. pgBackRest `ERROR: [028]: ... does not match current cluster`
+
 * **Symptom:** pgBackRest reports error `[028]` and refuses to archive WALs.
 * **Root Cause:** Reusing an S3 bucket or path that contains backup data from a previously created database cluster.
 * **Resolution:** Point `.env` to a fresh path (e.g., `BACKUP_S3_PATH=/pgbackrest-v2`) or delete the old archive directory in the bucket before bootstrapping a new cluster.
 
 ### 3. Docker Healthcheck `Peer authentication failed`
+
 * **Symptom:** `postgres-primary` is marked unhealthy with peer authentication errors.
 * **Root Cause:** Docker healthchecks run as host/container OS user `root`. If `pg_hba.conf` uses `peer` authentication on the local UNIX socket, `pg_isready -U postgres` fails because user `root` does not match PostgreSQL user `postgres`.
 * **Resolution:** Local UNIX domain socket connections in container `pg_hba.conf` are configured to `trust` (`local all all trust`). All TCP network connections remain strictly guarded by SCRAM-SHA-256 and SSL verification.
